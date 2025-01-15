@@ -412,31 +412,47 @@ func TestTestHuman_Conclusion(t *testing.T) {
 func TestTestHuman_File(t *testing.T) {
 	tcs := map[string]struct {
 		File     *moduletest.File
+		Progress moduletest.Progress
 		Expected string
 	}{
 		"pass": {
 			File:     &moduletest.File{Name: "main.tf", Status: moduletest.Pass},
+			Progress: moduletest.Complete,
 			Expected: "main.tf... pass\n",
 		},
 
 		"pending": {
 			File:     &moduletest.File{Name: "main.tf", Status: moduletest.Pending},
+			Progress: moduletest.Complete,
 			Expected: "main.tf... pending\n",
 		},
 
 		"skip": {
 			File:     &moduletest.File{Name: "main.tf", Status: moduletest.Skip},
+			Progress: moduletest.Complete,
 			Expected: "main.tf... skip\n",
 		},
 
 		"fail": {
 			File:     &moduletest.File{Name: "main.tf", Status: moduletest.Fail},
+			Progress: moduletest.Complete,
 			Expected: "main.tf... fail\n",
 		},
 
 		"error": {
 			File:     &moduletest.File{Name: "main.tf", Status: moduletest.Error},
+			Progress: moduletest.Complete,
 			Expected: "main.tf... fail\n",
+		},
+		"starting": {
+			File:     &moduletest.File{Name: "main.tftest.hcl", Status: moduletest.Pending},
+			Progress: moduletest.Starting,
+			Expected: "main.tftest.hcl... in progress\n",
+		},
+		"tear_down": {
+			File:     &moduletest.File{Name: "main.tftest.hcl", Status: moduletest.Pending},
+			Progress: moduletest.TearDown,
+			Expected: "main.tftest.hcl... tearing down\n",
 		},
 	}
 	for name, tc := range tcs {
@@ -445,7 +461,7 @@ func TestTestHuman_File(t *testing.T) {
 			streams, done := terminal.StreamsForTesting(t)
 			view := NewTest(arguments.ViewHuman, NewView(streams))
 
-			view.File(tc.File)
+			view.File(tc.File, tc.Progress)
 
 			actual := done(t).Stdout()
 			expected := tc.Expected
@@ -458,13 +474,15 @@ func TestTestHuman_File(t *testing.T) {
 
 func TestTestHuman_Run(t *testing.T) {
 	tcs := map[string]struct {
-		Run    *moduletest.Run
-		StdOut string
-		StdErr string
+		Run      *moduletest.Run
+		Progress moduletest.Progress
+		StdOut   string
+		StdErr   string
 	}{
 		"pass": {
-			Run:    &moduletest.Run{Name: "run_block", Status: moduletest.Pass},
-			StdOut: "  run \"run_block\"... pass\n",
+			Run:      &moduletest.Run{Name: "run_block", Status: moduletest.Pass},
+			Progress: moduletest.Complete,
+			StdOut:   "  run \"run_block\"... pass\n",
 		},
 
 		"pass_with_diags": {
@@ -473,27 +491,32 @@ func TestTestHuman_Run(t *testing.T) {
 				Status:      moduletest.Pass,
 				Diagnostics: tfdiags.Diagnostics{tfdiags.Sourceless(tfdiags.Warning, "a warning occurred", "some warning happened during this test")},
 			},
+			Progress: moduletest.Complete,
 			StdOut: `  run "run_block"... pass
 
 Warning: a warning occurred
 
 some warning happened during this test
+
 `,
 		},
 
 		"pending": {
-			Run:    &moduletest.Run{Name: "run_block", Status: moduletest.Pending},
-			StdOut: "  run \"run_block\"... pending\n",
+			Run:      &moduletest.Run{Name: "run_block", Status: moduletest.Pending},
+			Progress: moduletest.Complete,
+			StdOut:   "  run \"run_block\"... pending\n",
 		},
 
 		"skip": {
-			Run:    &moduletest.Run{Name: "run_block", Status: moduletest.Skip},
-			StdOut: "  run \"run_block\"... skip\n",
+			Run:      &moduletest.Run{Name: "run_block", Status: moduletest.Skip},
+			Progress: moduletest.Complete,
+			StdOut:   "  run \"run_block\"... skip\n",
 		},
 
 		"fail": {
-			Run:    &moduletest.Run{Name: "run_block", Status: moduletest.Fail},
-			StdOut: "  run \"run_block\"... fail\n",
+			Run:      &moduletest.Run{Name: "run_block", Status: moduletest.Fail},
+			Progress: moduletest.Complete,
+			StdOut:   "  run \"run_block\"... fail\n",
 		},
 
 		"fail_with_diags": {
@@ -505,7 +528,8 @@ some warning happened during this test
 					tfdiags.Sourceless(tfdiags.Error, "a second comparison failed", "other details"),
 				},
 			},
-			StdOut: "  run \"run_block\"... fail\n",
+			Progress: moduletest.Complete,
+			StdOut:   "  run \"run_block\"... fail\n",
 			StdErr: `
 Error: a comparison failed
 
@@ -518,8 +542,9 @@ other details
 		},
 
 		"error": {
-			Run:    &moduletest.Run{Name: "run_block", Status: moduletest.Error},
-			StdOut: "  run \"run_block\"... fail\n",
+			Run:      &moduletest.Run{Name: "run_block", Status: moduletest.Error},
+			Progress: moduletest.Complete,
+			StdOut:   "  run \"run_block\"... fail\n",
 		},
 
 		"error_with_diags": {
@@ -528,7 +553,8 @@ other details
 				Status:      moduletest.Error,
 				Diagnostics: tfdiags.Diagnostics{tfdiags.Sourceless(tfdiags.Error, "an error occurred", "something bad happened during this test")},
 			},
-			StdOut: "  run \"run_block\"... fail\n",
+			Progress: moduletest.Complete,
+			StdOut:   "  run \"run_block\"... fail\n",
 			StdErr: `
 Error: an error occurred
 
@@ -544,7 +570,7 @@ something bad happened during this test
 				},
 				Verbose: &moduletest.Verbose{
 					Plan: &plans.Plan{
-						Changes: &plans.Changes{
+						Changes: &plans.ChangesSrc{
 							Resources: []*plans.ResourceInstanceChangeSrc{
 								{
 									Addr: addrs.AbsResourceInstance{
@@ -613,6 +639,7 @@ something bad happened during this test
 					},
 				},
 			},
+			Progress: moduletest.Complete,
 			StdOut: `  run "run_block"... pass
 
 Terraform used the selected providers to generate the following execution
@@ -627,6 +654,7 @@ Terraform will perform the following actions:
     }
 
 Plan: 1 to add, 0 to change, 0 to destroy.
+
 `,
 		},
 		"verbose_apply": {
@@ -684,12 +712,29 @@ Plan: 1 to add, 0 to change, 0 to destroy.
 					},
 				},
 			},
+			Progress: moduletest.Complete,
 			StdOut: `  run "run_block"... pass
+
 # test_resource.creating:
 resource "test_resource" "creating" {
     value = "foobar"
 }
+
 `,
+		},
+		// These next three tests should print nothing, as we only report on
+		// progress complete.
+		"progress_starting": {
+			Run:      &moduletest.Run{Name: "run_block", Status: moduletest.Pass},
+			Progress: moduletest.Starting,
+		},
+		"progress_running": {
+			Run:      &moduletest.Run{Name: "run_block", Status: moduletest.Pass},
+			Progress: moduletest.Running,
+		},
+		"progress_teardown": {
+			Run:      &moduletest.Run{Name: "run_block", Status: moduletest.Pass},
+			Progress: moduletest.TearDown,
 		},
 	}
 	for name, tc := range tcs {
@@ -701,7 +746,7 @@ resource "test_resource" "creating" {
 			streams, done := terminal.StreamsForTesting(t)
 			view := NewTest(arguments.ViewHuman, NewView(streams))
 
-			view.Run(tc.Run, file)
+			view.Run(tc.Run, file, tc.Progress, 0)
 
 			output := done(t)
 			actual, expected := output.Stdout(), tc.StdOut
@@ -2181,11 +2226,13 @@ func TestTestJSON_DestroySummary(t *testing.T) {
 
 func TestTestJSON_File(t *testing.T) {
 	tcs := map[string]struct {
-		file *moduletest.File
-		want []map[string]interface{}
+		file     *moduletest.File
+		progress moduletest.Progress
+		want     []map[string]interface{}
 	}{
 		"pass": {
-			file: &moduletest.File{Name: "main.tf", Status: moduletest.Pass},
+			file:     &moduletest.File{Name: "main.tf", Status: moduletest.Pass},
+			progress: moduletest.Complete,
 			want: []map[string]interface{}{
 				{
 					"@level":    "info",
@@ -2193,8 +2240,9 @@ func TestTestJSON_File(t *testing.T) {
 					"@module":   "terraform.ui",
 					"@testfile": "main.tf",
 					"test_file": map[string]interface{}{
-						"path":   "main.tf",
-						"status": "pass",
+						"path":     "main.tf",
+						"progress": "complete",
+						"status":   "pass",
 					},
 					"type": "test_file",
 				},
@@ -2202,7 +2250,8 @@ func TestTestJSON_File(t *testing.T) {
 		},
 
 		"pending": {
-			file: &moduletest.File{Name: "main.tf", Status: moduletest.Pending},
+			file:     &moduletest.File{Name: "main.tf", Status: moduletest.Pending},
+			progress: moduletest.Complete,
 			want: []map[string]interface{}{
 				{
 					"@level":    "info",
@@ -2210,8 +2259,9 @@ func TestTestJSON_File(t *testing.T) {
 					"@module":   "terraform.ui",
 					"@testfile": "main.tf",
 					"test_file": map[string]interface{}{
-						"path":   "main.tf",
-						"status": "pending",
+						"path":     "main.tf",
+						"progress": "complete",
+						"status":   "pending",
 					},
 					"type": "test_file",
 				},
@@ -2219,7 +2269,8 @@ func TestTestJSON_File(t *testing.T) {
 		},
 
 		"skip": {
-			file: &moduletest.File{Name: "main.tf", Status: moduletest.Skip},
+			file:     &moduletest.File{Name: "main.tf", Status: moduletest.Skip},
+			progress: moduletest.Complete,
 			want: []map[string]interface{}{
 				{
 					"@level":    "info",
@@ -2227,8 +2278,9 @@ func TestTestJSON_File(t *testing.T) {
 					"@module":   "terraform.ui",
 					"@testfile": "main.tf",
 					"test_file": map[string]interface{}{
-						"path":   "main.tf",
-						"status": "skip",
+						"path":     "main.tf",
+						"progress": "complete",
+						"status":   "skip",
 					},
 					"type": "test_file",
 				},
@@ -2236,7 +2288,8 @@ func TestTestJSON_File(t *testing.T) {
 		},
 
 		"fail": {
-			file: &moduletest.File{Name: "main.tf", Status: moduletest.Fail},
+			file:     &moduletest.File{Name: "main.tf", Status: moduletest.Fail},
+			progress: moduletest.Complete,
 			want: []map[string]interface{}{
 				{
 					"@level":    "info",
@@ -2244,8 +2297,9 @@ func TestTestJSON_File(t *testing.T) {
 					"@module":   "terraform.ui",
 					"@testfile": "main.tf",
 					"test_file": map[string]interface{}{
-						"path":   "main.tf",
-						"status": "fail",
+						"path":     "main.tf",
+						"progress": "complete",
+						"status":   "fail",
 					},
 					"type": "test_file",
 				},
@@ -2253,7 +2307,8 @@ func TestTestJSON_File(t *testing.T) {
 		},
 
 		"error": {
-			file: &moduletest.File{Name: "main.tf", Status: moduletest.Error},
+			file:     &moduletest.File{Name: "main.tf", Status: moduletest.Error},
+			progress: moduletest.Complete,
 			want: []map[string]interface{}{
 				{
 					"@level":    "info",
@@ -2261,8 +2316,45 @@ func TestTestJSON_File(t *testing.T) {
 					"@module":   "terraform.ui",
 					"@testfile": "main.tf",
 					"test_file": map[string]interface{}{
-						"path":   "main.tf",
-						"status": "error",
+						"path":     "main.tf",
+						"progress": "complete",
+						"status":   "error",
+					},
+					"type": "test_file",
+				},
+			},
+		},
+
+		"starting": {
+			file:     &moduletest.File{Name: "main.tftest.hcl", Status: moduletest.Pending},
+			progress: moduletest.Starting,
+			want: []map[string]interface{}{
+				{
+					"@level":    "info",
+					"@message":  "main.tftest.hcl... in progress",
+					"@module":   "terraform.ui",
+					"@testfile": "main.tftest.hcl",
+					"test_file": map[string]interface{}{
+						"path":     "main.tftest.hcl",
+						"progress": "starting",
+					},
+					"type": "test_file",
+				},
+			},
+		},
+
+		"tear_down": {
+			file:     &moduletest.File{Name: "main.tftest.hcl", Status: moduletest.Pending},
+			progress: moduletest.TearDown,
+			want: []map[string]interface{}{
+				{
+					"@level":    "info",
+					"@message":  "main.tftest.hcl... tearing down",
+					"@module":   "terraform.ui",
+					"@testfile": "main.tftest.hcl",
+					"test_file": map[string]interface{}{
+						"path":     "main.tftest.hcl",
+						"progress": "teardown",
 					},
 					"type": "test_file",
 				},
@@ -2274,7 +2366,7 @@ func TestTestJSON_File(t *testing.T) {
 			streams, done := terminal.StreamsForTesting(t)
 			view := NewTest(arguments.ViewJSON, NewView(streams))
 
-			view.File(tc.file)
+			view.File(tc.file, tc.progress)
 			testJSONViewOutputEquals(t, done(t).All(), tc.want)
 		})
 	}
@@ -2282,11 +2374,78 @@ func TestTestJSON_File(t *testing.T) {
 
 func TestTestJSON_Run(t *testing.T) {
 	tcs := map[string]struct {
-		run  *moduletest.Run
-		want []map[string]interface{}
+		run      *moduletest.Run
+		progress moduletest.Progress
+		elapsed  int64
+		want     []map[string]interface{}
 	}{
+		"starting": {
+			run:      &moduletest.Run{Name: "run_block", Status: moduletest.Pass},
+			progress: moduletest.Starting,
+			want: []map[string]interface{}{
+				{
+					"@level":    "info",
+					"@message":  "  \"run_block\"... in progress",
+					"@module":   "terraform.ui",
+					"@testfile": "main.tftest.hcl",
+					"@testrun":  "run_block",
+					"test_run": map[string]interface{}{
+						"path":     "main.tftest.hcl",
+						"run":      "run_block",
+						"progress": "starting",
+						"elapsed":  float64(0),
+					},
+					"type": "test_run",
+				},
+			},
+		},
+
+		"running": {
+			run:      &moduletest.Run{Name: "run_block", Status: moduletest.Pass},
+			progress: moduletest.Running,
+			elapsed:  2024,
+			want: []map[string]interface{}{
+				{
+					"@level":    "info",
+					"@message":  "  \"run_block\"... in progress",
+					"@module":   "terraform.ui",
+					"@testfile": "main.tftest.hcl",
+					"@testrun":  "run_block",
+					"test_run": map[string]interface{}{
+						"path":     "main.tftest.hcl",
+						"run":      "run_block",
+						"progress": "running",
+						"elapsed":  float64(2024),
+					},
+					"type": "test_run",
+				},
+			},
+		},
+
+		"teardown": {
+			run:      &moduletest.Run{Name: "run_block", Status: moduletest.Pass},
+			progress: moduletest.TearDown,
+			want: []map[string]interface{}{
+				{
+					"@level":    "info",
+					"@message":  "  \"run_block\"... tearing down",
+					"@module":   "terraform.ui",
+					"@testfile": "main.tftest.hcl",
+					"@testrun":  "run_block",
+					"test_run": map[string]interface{}{
+						"path":     "main.tftest.hcl",
+						"run":      "run_block",
+						"progress": "teardown",
+						"elapsed":  float64(0),
+					},
+					"type": "test_run",
+				},
+			},
+		},
+
 		"pass": {
-			run: &moduletest.Run{Name: "run_block", Status: moduletest.Pass},
+			run:      &moduletest.Run{Name: "run_block", Status: moduletest.Pass},
+			progress: moduletest.Complete,
 			want: []map[string]interface{}{
 				{
 					"@level":    "info",
@@ -2295,9 +2454,10 @@ func TestTestJSON_Run(t *testing.T) {
 					"@testfile": "main.tftest.hcl",
 					"@testrun":  "run_block",
 					"test_run": map[string]interface{}{
-						"path":   "main.tftest.hcl",
-						"run":    "run_block",
-						"status": "pass",
+						"path":     "main.tftest.hcl",
+						"run":      "run_block",
+						"progress": "complete",
+						"status":   "pass",
 					},
 					"type": "test_run",
 				},
@@ -2310,6 +2470,7 @@ func TestTestJSON_Run(t *testing.T) {
 				Status:      moduletest.Pass,
 				Diagnostics: tfdiags.Diagnostics{tfdiags.Sourceless(tfdiags.Warning, "a warning occurred", "some warning happened during this test")},
 			},
+			progress: moduletest.Complete,
 			want: []map[string]interface{}{
 				{
 					"@level":    "info",
@@ -2318,9 +2479,10 @@ func TestTestJSON_Run(t *testing.T) {
 					"@testfile": "main.tftest.hcl",
 					"@testrun":  "run_block",
 					"test_run": map[string]interface{}{
-						"path":   "main.tftest.hcl",
-						"run":    "run_block",
-						"status": "pass",
+						"path":     "main.tftest.hcl",
+						"run":      "run_block",
+						"progress": "complete",
+						"status":   "pass",
 					},
 					"type": "test_run",
 				},
@@ -2341,7 +2503,8 @@ func TestTestJSON_Run(t *testing.T) {
 		},
 
 		"pending": {
-			run: &moduletest.Run{Name: "run_block", Status: moduletest.Pending},
+			run:      &moduletest.Run{Name: "run_block", Status: moduletest.Pending},
+			progress: moduletest.Complete,
 			want: []map[string]interface{}{
 				{
 					"@level":    "info",
@@ -2350,9 +2513,10 @@ func TestTestJSON_Run(t *testing.T) {
 					"@testfile": "main.tftest.hcl",
 					"@testrun":  "run_block",
 					"test_run": map[string]interface{}{
-						"path":   "main.tftest.hcl",
-						"run":    "run_block",
-						"status": "pending",
+						"path":     "main.tftest.hcl",
+						"run":      "run_block",
+						"progress": "complete",
+						"status":   "pending",
 					},
 					"type": "test_run",
 				},
@@ -2360,7 +2524,8 @@ func TestTestJSON_Run(t *testing.T) {
 		},
 
 		"skip": {
-			run: &moduletest.Run{Name: "run_block", Status: moduletest.Skip},
+			run:      &moduletest.Run{Name: "run_block", Status: moduletest.Skip},
+			progress: moduletest.Complete,
 			want: []map[string]interface{}{
 				{
 					"@level":    "info",
@@ -2369,9 +2534,10 @@ func TestTestJSON_Run(t *testing.T) {
 					"@testfile": "main.tftest.hcl",
 					"@testrun":  "run_block",
 					"test_run": map[string]interface{}{
-						"path":   "main.tftest.hcl",
-						"run":    "run_block",
-						"status": "skip",
+						"path":     "main.tftest.hcl",
+						"run":      "run_block",
+						"progress": "complete",
+						"status":   "skip",
 					},
 					"type": "test_run",
 				},
@@ -2379,7 +2545,8 @@ func TestTestJSON_Run(t *testing.T) {
 		},
 
 		"fail": {
-			run: &moduletest.Run{Name: "run_block", Status: moduletest.Fail},
+			run:      &moduletest.Run{Name: "run_block", Status: moduletest.Fail},
+			progress: moduletest.Complete,
 			want: []map[string]interface{}{
 				{
 					"@level":    "info",
@@ -2388,9 +2555,10 @@ func TestTestJSON_Run(t *testing.T) {
 					"@testfile": "main.tftest.hcl",
 					"@testrun":  "run_block",
 					"test_run": map[string]interface{}{
-						"path":   "main.tftest.hcl",
-						"run":    "run_block",
-						"status": "fail",
+						"path":     "main.tftest.hcl",
+						"run":      "run_block",
+						"progress": "complete",
+						"status":   "fail",
 					},
 					"type": "test_run",
 				},
@@ -2406,6 +2574,7 @@ func TestTestJSON_Run(t *testing.T) {
 					tfdiags.Sourceless(tfdiags.Error, "a second comparison failed", "other details"),
 				},
 			},
+			progress: moduletest.Complete,
 			want: []map[string]interface{}{
 				{
 					"@level":    "info",
@@ -2414,9 +2583,10 @@ func TestTestJSON_Run(t *testing.T) {
 					"@testfile": "main.tftest.hcl",
 					"@testrun":  "run_block",
 					"test_run": map[string]interface{}{
-						"path":   "main.tftest.hcl",
-						"run":    "run_block",
-						"status": "fail",
+						"path":     "main.tftest.hcl",
+						"run":      "run_block",
+						"progress": "complete",
+						"status":   "fail",
 					},
 					"type": "test_run",
 				},
@@ -2450,7 +2620,8 @@ func TestTestJSON_Run(t *testing.T) {
 		},
 
 		"error": {
-			run: &moduletest.Run{Name: "run_block", Status: moduletest.Error},
+			run:      &moduletest.Run{Name: "run_block", Status: moduletest.Error},
+			progress: moduletest.Complete,
 			want: []map[string]interface{}{
 				{
 					"@level":    "info",
@@ -2459,9 +2630,10 @@ func TestTestJSON_Run(t *testing.T) {
 					"@testfile": "main.tftest.hcl",
 					"@testrun":  "run_block",
 					"test_run": map[string]interface{}{
-						"path":   "main.tftest.hcl",
-						"run":    "run_block",
-						"status": "error",
+						"path":     "main.tftest.hcl",
+						"run":      "run_block",
+						"progress": "complete",
+						"status":   "error",
 					},
 					"type": "test_run",
 				},
@@ -2474,6 +2646,7 @@ func TestTestJSON_Run(t *testing.T) {
 				Status:      moduletest.Error,
 				Diagnostics: tfdiags.Diagnostics{tfdiags.Sourceless(tfdiags.Error, "an error occurred", "something bad happened during this test")},
 			},
+			progress: moduletest.Complete,
 			want: []map[string]interface{}{
 				{
 					"@level":    "info",
@@ -2482,9 +2655,10 @@ func TestTestJSON_Run(t *testing.T) {
 					"@testfile": "main.tftest.hcl",
 					"@testrun":  "run_block",
 					"test_run": map[string]interface{}{
-						"path":   "main.tftest.hcl",
-						"run":    "run_block",
-						"status": "error",
+						"path":     "main.tftest.hcl",
+						"run":      "run_block",
+						"progress": "complete",
+						"status":   "error",
 					},
 					"type": "test_run",
 				},
@@ -2513,7 +2687,7 @@ func TestTestJSON_Run(t *testing.T) {
 				},
 				Verbose: &moduletest.Verbose{
 					Plan: &plans.Plan{
-						Changes: &plans.Changes{
+						Changes: &plans.ChangesSrc{
 							Resources: []*plans.ResourceInstanceChangeSrc{
 								{
 									Addr: addrs.AbsResourceInstance{
@@ -2586,6 +2760,7 @@ func TestTestJSON_Run(t *testing.T) {
 					},
 				},
 			},
+			progress: moduletest.Complete,
 			want: []map[string]interface{}{
 				{
 					"@level":    "info",
@@ -2594,9 +2769,10 @@ func TestTestJSON_Run(t *testing.T) {
 					"@testfile": "main.tftest.hcl",
 					"@testrun":  "run_block",
 					"test_run": map[string]interface{}{
-						"path":   "main.tftest.hcl",
-						"run":    "run_block",
-						"status": "pass",
+						"path":     "main.tftest.hcl",
+						"run":      "run_block",
+						"progress": "complete",
+						"status":   "pass",
 					},
 					"type": "test_run",
 				},
@@ -2607,28 +2783,8 @@ func TestTestJSON_Run(t *testing.T) {
 					"@testfile": "main.tftest.hcl",
 					"@testrun":  "run_block",
 					"test_plan": map[string]interface{}{
-						"configuration": map[string]interface{}{
-							"root_module": map[string]interface{}{},
-						},
-						"errored": false,
-						"planned_values": map[string]interface{}{
-							"root_module": map[string]interface{}{
-								"resources": []interface{}{
-									map[string]interface{}{
-										"address":          "test_resource.creating",
-										"mode":             "managed",
-										"name":             "creating",
-										"provider_name":    "registry.terraform.io/hashicorp/test",
-										"schema_version":   0.0,
-										"sensitive_values": map[string]interface{}{},
-										"type":             "test_resource",
-										"values": map[string]interface{}{
-											"value": "foobar",
-										},
-									},
-								},
-							},
-						},
+						"plan_format_version":     "1.2",
+						"provider_format_version": "1.0",
 						"resource_changes": []interface{}{
 							map[string]interface{}{
 								"address": "test_resource.creating",
@@ -2648,11 +2804,33 @@ func TestTestJSON_Run(t *testing.T) {
 								"type":          "test_resource",
 							},
 						},
+						"provider_schemas": map[string]interface{}{
+							"registry.terraform.io/hashicorp/test": map[string]interface{}{
+								"provider": map[string]interface{}{
+									"version": 0.0,
+								},
+								"resource_schemas": map[string]interface{}{
+									"test_resource": map[string]interface{}{
+										"block": map[string]interface{}{
+											"attributes": map[string]interface{}{
+												"value": map[string]interface{}{
+													"description_kind": "plain",
+													"type":             "string",
+												},
+											},
+											"description_kind": "plain",
+										},
+										"version": 0.0,
+									},
+								},
+							},
+						},
 					},
 					"type": "test_plan",
 				},
 			},
 		},
+
 		"verbose_apply": {
 			run: &moduletest.Run{
 				Name:   "run_block",
@@ -2710,6 +2888,7 @@ func TestTestJSON_Run(t *testing.T) {
 					},
 				},
 			},
+			progress: moduletest.Complete,
 			want: []map[string]interface{}{
 				{
 					"@level":    "info",
@@ -2718,9 +2897,10 @@ func TestTestJSON_Run(t *testing.T) {
 					"@testfile": "main.tftest.hcl",
 					"@testrun":  "run_block",
 					"test_run": map[string]interface{}{
-						"path":   "main.tftest.hcl",
-						"run":    "run_block",
-						"status": "pass",
+						"path":     "main.tftest.hcl",
+						"run":      "run_block",
+						"progress": "complete",
+						"status":   "pass",
 					},
 					"type": "test_run",
 				},
@@ -2731,20 +2911,41 @@ func TestTestJSON_Run(t *testing.T) {
 					"@testfile": "main.tftest.hcl",
 					"@testrun":  "run_block",
 					"test_state": map[string]interface{}{
-						"values": map[string]interface{}{
-							"root_module": map[string]interface{}{
-								"resources": []interface{}{
-									map[string]interface{}{
-										"address":          "test_resource.creating",
-										"mode":             "managed",
-										"name":             "creating",
-										"provider_name":    "registry.terraform.io/hashicorp/test",
-										"schema_version":   0.0,
-										"sensitive_values": map[string]interface{}{},
-										"type":             "test_resource",
-										"values": map[string]interface{}{
-											"value": "foobar",
+						"state_format_version":    "1.0",
+						"provider_format_version": "1.0",
+						"root_module": map[string]interface{}{
+							"resources": []interface{}{
+								map[string]interface{}{
+									"address":          "test_resource.creating",
+									"mode":             "managed",
+									"name":             "creating",
+									"provider_name":    "registry.terraform.io/hashicorp/test",
+									"schema_version":   0.0,
+									"sensitive_values": map[string]interface{}{},
+									"type":             "test_resource",
+									"values": map[string]interface{}{
+										"value": "foobar",
+									},
+								},
+							},
+						},
+						"provider_schemas": map[string]interface{}{
+							"registry.terraform.io/hashicorp/test": map[string]interface{}{
+								"provider": map[string]interface{}{
+									"version": 0.0,
+								},
+								"resource_schemas": map[string]interface{}{
+									"test_resource": map[string]interface{}{
+										"block": map[string]interface{}{
+											"attributes": map[string]interface{}{
+												"value": map[string]interface{}{
+													"description_kind": "plain",
+													"type":             "string",
+												},
+											},
+											"description_kind": "plain",
 										},
+										"version": 0.0,
 									},
 								},
 							},
@@ -2762,7 +2963,7 @@ func TestTestJSON_Run(t *testing.T) {
 
 			file := &moduletest.File{Name: "main.tftest.hcl"}
 
-			view.Run(tc.run, file)
+			view.Run(tc.run, file, tc.progress, tc.elapsed)
 			testJSONViewOutputEquals(t, done(t).All(), tc.want, cmp.FilterPath(func(path cmp.Path) bool {
 				return strings.Contains(path.Last().String(), "version") || strings.Contains(path.Last().String(), "timestamp")
 			}, cmp.Ignore()))

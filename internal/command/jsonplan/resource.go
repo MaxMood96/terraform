@@ -9,8 +9,8 @@ import (
 	"github.com/hashicorp/terraform/internal/addrs"
 )
 
-// Resource is the representation of a resource in the json plan
-type Resource struct {
+// resource is the representation of a resource in the json plan
+type resource struct {
 	// Address is the absolute resource address
 	Address string `json:"address,omitempty"`
 
@@ -37,7 +37,7 @@ type Resource struct {
 	// resource, whose structure depends on the resource type schema. Any
 	// unknown values are omitted or set to null, making them indistinguishable
 	// from absent values.
-	AttributeValues AttributeValues `json:"values,omitempty"`
+	AttributeValues attributeValues `json:"values,omitempty"`
 
 	// SensitiveValues is similar to AttributeValues, but with all sensitive
 	// values replaced with true, and all non-sensitive leaf values omitted.
@@ -73,6 +73,7 @@ type ResourceChange struct {
 	Type         string          `json:"type,omitempty"`
 	Name         string          `json:"name,omitempty"`
 	Index        json.RawMessage `json:"index,omitempty"`
+	IndexUnknown bool            `json:"index_unknown,omitempty"`
 	ProviderName string          `json:"provider_name,omitempty"`
 
 	// "deposed", if set, indicates that this action applies to a "deposed"
@@ -92,4 +93,14 @@ type ResourceChange struct {
 	// information should be resilient to encountering unrecognized values
 	// and treat them as an unspecified reason.
 	ActionReason string `json:"action_reason,omitempty"`
+}
+
+// DeferredResourceChange is a description of a resource change that has been
+// deferred for some reason.
+type DeferredResourceChange struct {
+	// Reason is the reason why this resource change was deferred.
+	Reason string `json:"reason"`
+
+	// Change contains any information we have about the deferred change.
+	ResourceChange ResourceChange `json:"resource_change"`
 }

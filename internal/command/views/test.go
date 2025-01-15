@@ -6,9 +6,13 @@ package views
 import (
 	"bytes"
 	"fmt"
+	"net/http"
+	"time"
 
+	"github.com/hashicorp/go-tfe"
 	"github.com/mitchellh/colorstring"
 
+	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/command/arguments"
 	"github.com/hashicorp/terraform/internal/command/format"
 	"github.com/hashicorp/terraform/internal/command/jsonformat"
@@ -39,10 +43,10 @@ type Test interface {
 	Conclusion(suite *moduletest.Suite)
 
 	// File prints out the summary for an entire test file.
-	File(file *moduletest.File)
+	File(file *moduletest.File, progress moduletest.Progress)
 
 	// Run prints out the summary for a single test run block.
-	Run(run *moduletest.Run, file *moduletest.File)
+	Run(run *moduletest.Run, file *moduletest.File, progress moduletest.Progress, elapsed int64)
 
 	// DestroySummary prints out the summary of the destroy step of each test
 	// file. If everything goes well, this should be empty.
@@ -68,6 +72,13 @@ type Test interface {
 	// operation alongside the current state as the state will be missing newly
 	// created resources that also need to be handled manually.
 	FatalInterruptSummary(run *moduletest.Run, file *moduletest.File, states map[*moduletest.Run]*states.State, created []*plans.ResourceInstanceChangeSrc)
+
+	// TFCStatusUpdate prints a reassuring update, letting users know the latest
+	// status of their ongoing remote test run.
+	TFCStatusUpdate(status tfe.TestRunStatus, elapsed time.Duration)
+
+	// TFCRetryHook prints an update if a request failed and is being retried.
+	TFCRetryHook(attemptNum int, resp *http.Response)
 }
 
 func NewTest(vt arguments.ViewType, view *View) Test {
@@ -86,6 +97,8 @@ func NewTest(vt arguments.ViewType, view *View) Test {
 }
 
 type TestHuman struct {
+	CloudHooks
+
 	view *View
 }
 
@@ -131,12 +144,30 @@ func (t *TestHuman) Conclusion(suite *moduletest.Suite) {
 	}
 }
 
-func (t *TestHuman) File(file *moduletest.File) {
-	t.view.streams.Printf("%s... %s\n", file.Name, colorizeTestStatus(file.Status, t.view.colorize))
-	t.Diagnostics(nil, file, file.Diagnostics)
+func (t *TestHuman) File(file *moduletest.File, progress moduletest.Progress) {
+	switch progress {
+	case moduletest.Starting, moduletest.Running:
+		t.view.streams.Printf(t.view.colorize.Color("%s... [light_gray]in progress[reset]\n"), file.Name)
+	case moduletest.TearDown:
+		t.view.streams.Printf(t.view.colorize.Color("%s... [light_gray]tearing down[reset]\n"), file.Name)
+	case moduletest.Complete:
+		t.view.streams.Printf("%s... %s\n", file.Name, colorizeTestStatus(file.Status, t.view.colorize))
+		t.Diagnostics(nil, file, file.Diagnostics)
+	default:
+		panic("unrecognized test progress: " + progress.String())
+	}
 }
 
-func (t *TestHuman) Run(run *moduletest.Run, file *moduletest.File) {
+func (t *TestHuman) Run(run *moduletest.Run, file *moduletest.File, progress moduletest.Progress, _ int64) {
+	switch progress {
+	case moduletest.Starting, moduletest.Running, moduletest.TearDown:
+		return // We don't print progress updates in human mode
+	case moduletest.Complete:
+		// Do nothing, the rest of the function handles this.
+	default:
+		panic("unrecognized test progress: " + progress.String())
+	}
+
 	t.view.streams.Printf("  run %q... %s\n", run.Name, colorizeTestStatus(run.Status, t.view.colorize))
 
 	if run.Verbose != nil {
@@ -171,7 +202,9 @@ func (t *TestHuman) Run(run *moduletest.Run, file *moduletest.File) {
 					ProviderSchemas:       jsonprovider.MarshalForRenderer(schemas),
 				}
 
+				t.view.streams.Println() // Separate the state from any previous statements.
 				renderer.RenderHumanState(state)
+				t.view.streams.Println() // Separate the state from any future statements.
 			}
 		} else {
 			// We'll print the plan.
@@ -193,20 +226,42 @@ func (t *TestHuman) Run(run *moduletest.Run, file *moduletest.File) {
 				}
 
 				var opts []plans.Quality
-				if !run.Verbose.Plan.CanApply() {
-					opts = append(opts, plans.NoChanges)
-				}
 				if run.Verbose.Plan.Errored {
 					opts = append(opts, plans.Errored)
+				} else if !run.Verbose.Plan.Applyable {
+					opts = append(opts, plans.NoChanges)
 				}
 
 				renderer.RenderHumanPlan(plan, run.Verbose.Plan.UIMode, opts...)
+				t.view.streams.Println() // Separate the plan from any future statements.
 			}
 		}
 	}
 
 	// Finally we'll print out a summary of the diagnostics from the run.
 	t.Diagnostics(run, file, run.Diagnostics)
+
+	var warnings bool
+	for _, diag := range run.Diagnostics {
+		switch diag.Severity() {
+		case tfdiags.Error:
+			// do nothing
+		case tfdiags.Warning:
+			warnings = true
+		}
+
+		if warnings {
+			// We only care about checking if we printed any warnings in the
+			// previous output.
+			break
+		}
+	}
+
+	if warnings {
+		// warnings are printed to stdout, so we'll put a new line into stdout
+		// to separate any future statements info statements.
+		t.view.streams.Println()
+	}
 }
 
 func (t *TestHuman) DestroySummary(diags tfdiags.Diagnostics, run *moduletest.Run, file *moduletest.File, state *states.State) {
@@ -221,13 +276,15 @@ func (t *TestHuman) DestroySummary(diags tfdiags.Diagnostics, run *moduletest.Ru
 	t.Diagnostics(run, file, diags)
 
 	if state.HasManagedResourceInstanceObjects() {
+		// FIXME: This message says "resources" but this is actually a list
+		// of resource instance objects.
 		t.view.streams.Eprint(format.WordWrap(fmt.Sprintf("\nTerraform left the following resources in state after executing %s, and they need to be cleaned up manually:\n", identifier), t.view.errorColumns()))
-		for _, resource := range state.AllResourceInstanceObjectAddrs() {
+		for _, resource := range addrs.SetSortedNatural(state.AllManagedResourceInstanceObjectAddrs()) {
 			if resource.DeposedKey != states.NotDeposed {
-				t.view.streams.Eprintf("  - %s (%s)\n", resource.Instance, resource.DeposedKey)
+				t.view.streams.Eprintf("  - %s (%s)\n", resource.ResourceInstance, resource.DeposedKey)
 				continue
 			}
-			t.view.streams.Eprintf("  - %s\n", resource.Instance)
+			t.view.streams.Eprintf("  - %s\n", resource.ResourceInstance)
 		}
 	}
 }
@@ -251,12 +308,12 @@ func (t *TestHuman) FatalInterruptSummary(run *moduletest.Run, file *moduletest.
 	// with a run block.
 	if state, exists := existingStates[nil]; exists && !state.Empty() {
 		t.view.streams.Eprint(format.WordWrap("\nTerraform has already created the following resources from the module under test:\n", t.view.errorColumns()))
-		for _, resource := range state.AllResourceInstanceObjectAddrs() {
+		for _, resource := range addrs.SetSortedNatural(state.AllManagedResourceInstanceObjectAddrs()) {
 			if resource.DeposedKey != states.NotDeposed {
-				t.view.streams.Eprintf("  - %s (%s)\n", resource.Instance, resource.DeposedKey)
+				t.view.streams.Eprintf("  - %s (%s)\n", resource.ResourceInstance, resource.DeposedKey)
 				continue
 			}
-			t.view.streams.Eprintf("  - %s\n", resource.Instance)
+			t.view.streams.Eprintf("  - %s\n", resource.ResourceInstance)
 		}
 	}
 
@@ -268,12 +325,12 @@ func (t *TestHuman) FatalInterruptSummary(run *moduletest.Run, file *moduletest.
 		}
 
 		t.view.streams.Eprint(format.WordWrap(fmt.Sprintf("\nTerraform has already created the following resources for %q from %q:\n", run.Name, run.Config.Module.Source), t.view.errorColumns()))
-		for _, resource := range state.AllResourceInstanceObjectAddrs() {
+		for _, resource := range addrs.SetSortedNatural(state.AllManagedResourceInstanceObjectAddrs()) {
 			if resource.DeposedKey != states.NotDeposed {
-				t.view.streams.Eprintf("  - %s (%s)\n", resource.Instance, resource.DeposedKey)
+				t.view.streams.Eprintf("  - %s (%s)\n", resource.ResourceInstance, resource.DeposedKey)
 				continue
 			}
-			t.view.streams.Eprintf("  - %s\n", resource.Instance)
+			t.view.streams.Eprintf("  - %s\n", resource.ResourceInstance)
 		}
 	}
 
@@ -300,7 +357,22 @@ func (t *TestHuman) FatalInterruptSummary(run *moduletest.Run, file *moduletest.
 	}
 }
 
+func (t *TestHuman) TFCStatusUpdate(status tfe.TestRunStatus, elapsed time.Duration) {
+	switch status {
+	case tfe.TestRunQueued:
+		t.view.streams.Printf("Waiting for the tests to start... (%s elapsed)\n", elapsed.Truncate(30*time.Second))
+	case tfe.TestRunRunning:
+		t.view.streams.Printf("Waiting for the tests to complete... (%s elapsed)\n", elapsed.Truncate(30*time.Second))
+	}
+}
+
+func (t *TestHuman) TFCRetryHook(attemptNum int, resp *http.Response) {
+	t.view.streams.Println(t.view.colorize.Color(t.RetryLogHook(attemptNum, resp, true)))
+}
+
 type TestJSON struct {
+	CloudHooks
+
 	view *JSONView
 }
 
@@ -386,20 +458,84 @@ func (t *TestJSON) Conclusion(suite *moduletest.Suite) {
 		json.MessageTestSummary, summary)
 }
 
-func (t *TestJSON) File(file *moduletest.File) {
-	t.view.log.Info(
-		fmt.Sprintf("%s... %s", file.Name, testStatus(file.Status)),
-		"type", json.MessageTestFile,
-		json.MessageTestFile, json.TestFileStatus{file.Name, json.ToTestStatus(file.Status)},
-		"@testfile", file.Name)
-	t.Diagnostics(nil, file, file.Diagnostics)
+func (t *TestJSON) File(file *moduletest.File, progress moduletest.Progress) {
+	switch progress {
+	case moduletest.Starting, moduletest.Running:
+		t.view.log.Info(
+			fmt.Sprintf("%s... in progress", file.Name),
+			"type", json.MessageTestFile,
+			json.MessageTestFile, json.TestFileStatus{
+				Path:     file.Name,
+				Progress: json.ToTestProgress(moduletest.Starting),
+			},
+			"@testfile", file.Name)
+	case moduletest.TearDown:
+		t.view.log.Info(
+			fmt.Sprintf("%s... tearing down", file.Name),
+			"type", json.MessageTestFile,
+			json.MessageTestFile, json.TestFileStatus{
+				Path:     file.Name,
+				Progress: json.ToTestProgress(moduletest.TearDown),
+			},
+			"@testfile", file.Name)
+	case moduletest.Complete:
+		t.view.log.Info(
+			fmt.Sprintf("%s... %s", file.Name, testStatus(file.Status)),
+			"type", json.MessageTestFile,
+			json.MessageTestFile, json.TestFileStatus{
+				Path:     file.Name,
+				Progress: json.ToTestProgress(moduletest.Complete),
+				Status:   json.ToTestStatus(file.Status),
+			},
+			"@testfile", file.Name)
+		t.Diagnostics(nil, file, file.Diagnostics)
+	default:
+		panic("unrecognized test progress: " + progress.String())
+	}
 }
 
-func (t *TestJSON) Run(run *moduletest.Run, file *moduletest.File) {
+func (t *TestJSON) Run(run *moduletest.Run, file *moduletest.File, progress moduletest.Progress, elapsed int64) {
+	switch progress {
+	case moduletest.Starting, moduletest.Running:
+		t.view.log.Info(
+			fmt.Sprintf("  %q... in progress", run.Name),
+			"type", json.MessageTestRun,
+			json.MessageTestRun, json.TestRunStatus{
+				Path:     file.Name,
+				Run:      run.Name,
+				Progress: json.ToTestProgress(progress),
+				Elapsed:  &elapsed,
+			},
+			"@testfile", file.Name,
+			"@testrun", run.Name)
+		return
+	case moduletest.TearDown:
+		t.view.log.Info(
+			fmt.Sprintf("  %q... tearing down", run.Name),
+			"type", json.MessageTestRun,
+			json.MessageTestRun, json.TestRunStatus{
+				Path:     file.Name,
+				Run:      run.Name,
+				Progress: json.ToTestProgress(progress),
+				Elapsed:  &elapsed,
+			},
+			"@testfile", file.Name,
+			"@testrun", run.Name)
+		return
+	case moduletest.Complete:
+		// Do nothing, the rest of the function handles this case.
+	default:
+		panic("unrecognized test progress: " + progress.String())
+	}
+
 	t.view.log.Info(
 		fmt.Sprintf("  %q... %s", run.Name, testStatus(run.Status)),
 		"type", json.MessageTestRun,
-		json.MessageTestRun, json.TestRunStatus{file.Name, run.Name, json.ToTestStatus(run.Status)},
+		json.MessageTestRun, json.TestRunStatus{
+			Path:     file.Name,
+			Run:      run.Name,
+			Progress: json.ToTestProgress(progress),
+			Status:   json.ToTestStatus(run.Status)},
 		"@testfile", file.Name,
 		"@testrun", run.Name)
 
@@ -411,13 +547,22 @@ func (t *TestJSON) Run(run *moduletest.Run, file *moduletest.File) {
 		}
 
 		if run.Config.Command == configs.ApplyTestCommand {
-			state, err := jsonstate.MarshalForLog(statefile.New(run.Verbose.State, file.Name, uint64(run.Index)), schemas)
+			// Then we'll print the state.
+			root, outputs, err := jsonstate.MarshalForRenderer(statefile.New(run.Verbose.State, file.Name, uint64(run.Index)), schemas)
 			if err != nil {
 				run.Diagnostics = run.Diagnostics.Append(tfdiags.Sourceless(
 					tfdiags.Warning,
 					"Failed to render test state",
 					fmt.Sprintf("Terraform could not marshal the state for display: %v", err)))
 			} else {
+				state := jsonformat.State{
+					StateFormatVersion:    jsonstate.FormatVersion,
+					ProviderFormatVersion: jsonprovider.FormatVersion,
+					RootModule:            root,
+					RootModuleOutputs:     outputs,
+					ProviderSchemas:       jsonprovider.MarshalForRenderer(schemas),
+				}
+
 				t.view.log.Info(
 					"-verbose flag enabled, printing state",
 					"type", json.MessageTestState,
@@ -426,13 +571,23 @@ func (t *TestJSON) Run(run *moduletest.Run, file *moduletest.File) {
 					"@testrun", run.Name)
 			}
 		} else {
-			plan, err := jsonplan.MarshalForLog(run.Verbose.Config, run.Verbose.Plan, nil, schemas)
+			outputs, changed, drift, attrs, err := jsonplan.MarshalForRenderer(run.Verbose.Plan, schemas)
 			if err != nil {
 				run.Diagnostics = run.Diagnostics.Append(tfdiags.Sourceless(
 					tfdiags.Warning,
 					"Failed to render test plan",
 					fmt.Sprintf("Terraform could not marshal the plan for display: %v", err)))
 			} else {
+				plan := jsonformat.Plan{
+					PlanFormatVersion:     jsonplan.FormatVersion,
+					ProviderFormatVersion: jsonprovider.FormatVersion,
+					OutputChanges:         outputs,
+					ResourceChanges:       changed,
+					ResourceDrift:         drift,
+					ProviderSchemas:       jsonprovider.MarshalForRenderer(schemas),
+					RelevantAttributes:    attrs,
+				}
+
 				t.view.log.Info(
 					"-verbose flag enabled, printing plan",
 					"type", json.MessageTestPlan,
@@ -449,9 +604,9 @@ func (t *TestJSON) Run(run *moduletest.Run, file *moduletest.File) {
 func (t *TestJSON) DestroySummary(diags tfdiags.Diagnostics, run *moduletest.Run, file *moduletest.File, state *states.State) {
 	if state.HasManagedResourceInstanceObjects() {
 		cleanup := json.TestFileCleanup{}
-		for _, resource := range state.AllResourceInstanceObjectAddrs() {
+		for _, resource := range addrs.SetSortedNatural(state.AllManagedResourceInstanceObjectAddrs()) {
 			cleanup.FailedResources = append(cleanup.FailedResources, json.TestFailedResource{
-				Instance:   resource.Instance.String(),
+				Instance:   resource.ResourceInstance.String(),
 				DeposedKey: resource.DeposedKey.String(),
 			})
 		}
@@ -507,9 +662,9 @@ func (t *TestJSON) FatalInterruptSummary(run *moduletest.Run, file *moduletest.F
 		}
 
 		var resources []json.TestFailedResource
-		for _, resource := range state.AllResourceInstanceObjectAddrs() {
+		for _, resource := range addrs.SetSortedNatural(state.AllManagedResourceInstanceObjectAddrs()) {
 			resources = append(resources, json.TestFailedResource{
-				Instance:   resource.Instance.String(),
+				Instance:   resource.ResourceInstance.String(),
 				DeposedKey: resource.DeposedKey.String(),
 			})
 		}
@@ -546,6 +701,34 @@ func (t *TestJSON) FatalInterruptSummary(run *moduletest.Run, file *moduletest.F
 			json.MessageTestInterrupt, message,
 			"@testfile", file.Name)
 	}
+}
+
+func (t *TestJSON) TFCStatusUpdate(status tfe.TestRunStatus, elapsed time.Duration) {
+	var message string
+	switch status {
+	case tfe.TestRunQueued:
+		message = fmt.Sprintf("Waiting for the tests to start... (%s elapsed)\n", elapsed.Truncate(30*time.Second))
+	case tfe.TestRunRunning:
+		message = fmt.Sprintf("Waiting for the tests to complete... (%s elapsed)\n", elapsed.Truncate(30*time.Second))
+	default:
+		// Don't care about updates for other statuses.
+		return
+	}
+
+	t.view.log.Info(
+		message,
+		"type", json.MessageTestStatus,
+		json.MessageTestStatus, json.TestStatusUpdate{
+			Status:   string(status),
+			Duration: elapsed.Seconds(),
+		})
+}
+
+func (t *TestJSON) TFCRetryHook(attemptNum int, resp *http.Response) {
+	t.view.log.Error(
+		t.RetryLogHook(attemptNum, resp, false),
+		"type", json.MessageTestRetry,
+	)
 }
 
 func colorizeTestStatus(status moduletest.Status, color *colorstring.Colorize) string {

@@ -12,7 +12,7 @@ import (
 	"github.com/hashicorp/terraform/internal/checks"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/dag"
-	"github.com/hashicorp/terraform/internal/lang"
+	"github.com/hashicorp/terraform/internal/lang/langrefs"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 )
 
@@ -40,7 +40,7 @@ func (n *nodeReportCheck) ModulePath() addrs.Module {
 
 func (n *nodeReportCheck) Execute(ctx EvalContext, _ walkOperation) tfdiags.Diagnostics {
 	exp := ctx.InstanceExpander()
-	modInsts := exp.ExpandModule(n.ModulePath())
+	modInsts := exp.ExpandModule(n.ModulePath(), false)
 
 	instAddrs := addrs.MakeSet[addrs.Checkable]()
 	for _, modAddr := range modInsts {
@@ -58,6 +58,7 @@ var (
 	_ GraphNodeModulePath        = (*nodeExpandCheck)(nil)
 	_ GraphNodeDynamicExpandable = (*nodeExpandCheck)(nil)
 	_ GraphNodeReferencer        = (*nodeExpandCheck)(nil)
+	_ graphNodeExpandsInstances  = (*nodeExpandCheck)(nil)
 )
 
 // nodeExpandCheck creates child nodes that actually execute the assertions for
@@ -75,20 +76,25 @@ type nodeExpandCheck struct {
 	makeInstance func(addrs.AbsCheck, *configs.Check) dag.Vertex
 }
 
+func (n *nodeExpandCheck) expandsInstances() {}
+
 func (n *nodeExpandCheck) ModulePath() addrs.Module {
 	return n.addr.Module
 }
 
-func (n *nodeExpandCheck) DynamicExpand(ctx EvalContext) (*Graph, error) {
+func (n *nodeExpandCheck) DynamicExpand(ctx EvalContext) (*Graph, tfdiags.Diagnostics) {
 	exp := ctx.InstanceExpander()
-	modInsts := exp.ExpandModule(n.ModulePath())
 
 	var g Graph
-	for _, modAddr := range modInsts {
+	forEachModuleInstance(exp, n.ModulePath(), false, func(modAddr addrs.ModuleInstance) {
 		testAddr := n.addr.Check.Absolute(modAddr)
 		log.Printf("[TRACE] nodeExpandCheck: Node for %s", testAddr)
 		g.Add(n.makeInstance(testAddr, n.config))
-	}
+	}, func(pem addrs.PartialExpandedModule) {
+		// TODO: Graph node to check the placeholder values for all possible module instances in this prefix.
+		testAddr := addrs.ObjectInPartialExpandedModule(pem, n.addr)
+		log.Printf("[WARN] nodeExpandCheck: not yet doing placeholder-check for all %s", testAddr)
+	})
 	addRootNodeToGraph(&g)
 
 	return &g, nil
@@ -99,8 +105,8 @@ func (n *nodeExpandCheck) References() []*addrs.Reference {
 	for _, assert := range n.config.Asserts {
 		// Check blocks reference anything referenced by conditions or messages
 		// in their check rules.
-		condition, _ := lang.ReferencesInExpr(addrs.ParseRef, assert.Condition)
-		message, _ := lang.ReferencesInExpr(addrs.ParseRef, assert.ErrorMessage)
+		condition, _ := langrefs.ReferencesInExpr(addrs.ParseRef, assert.Condition)
+		message, _ := langrefs.ReferencesInExpr(addrs.ParseRef, assert.ErrorMessage)
 		refs = append(refs, condition...)
 		refs = append(refs, message...)
 	}

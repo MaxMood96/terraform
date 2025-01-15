@@ -6,6 +6,7 @@ package terraform
 import (
 	"log"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/hashicorp/terraform/internal/addrs"
@@ -29,6 +30,10 @@ type NodeRootVariable struct {
 	// Planning must be set to true when building a planning graph, and must be
 	// false when building an apply graph.
 	Planning bool
+
+	// DestroyApply must be set to true when applying a destroy operation and
+	// false otherwise.
+	DestroyApply bool
 }
 
 var (
@@ -107,15 +112,11 @@ func (n *NodeRootVariable) Execute(ctx EvalContext, op walkOperation) tfdiags.Di
 		return diags
 	}
 
-	ctx.SetRootModuleArgument(addr.Variable, finalVal)
+	ctx.NamedValues().SetInputVariableValue(addr, finalVal)
 
-	moreDiags = evalVariableValidations(
-		addrs.RootModuleInstance.InputVariable(n.Addr.Name),
-		n.Config,
-		nil, // not set for root module variables
-		ctx,
-	)
-	diags = diags.Append(moreDiags)
+	// Custom validation rules are handled by a separate graph node of type
+	// nodeVariableValidation, added by variableValidationTransformer.
+
 	return diags
 }
 
@@ -128,4 +129,31 @@ func (n *NodeRootVariable) DotNode(name string, opts *dag.DotOpts) *dag.DotNode 
 			"shape": "note",
 		},
 	}
+}
+
+// variableValidationRules implements [graphNodeValidatableVariable].
+func (n *NodeRootVariable) variableValidationRules() (addrs.ConfigInputVariable, []*configs.CheckRule, hcl.Range) {
+	var defnRange hcl.Range
+	if n.RawValue != nil && n.RawValue.SourceType.HasSourceRange() {
+		defnRange = n.RawValue.SourceRange.ToHCL()
+	} else if n.Config != nil { // always in normal code, but sometimes not in unit tests
+		// For non-configuration-based definitions, such as environment
+		// variables or CLI arguments, we'll use the declaration as the
+		// "definition range" instead, since it's better than not indicating
+		// any source range at all.
+		defnRange = n.Config.DeclRange
+	}
+
+	if n.DestroyApply {
+		// We don't perform any variable validation during the apply phase
+		// of a destroy, because validation rules typically aren't prepared
+		// for dealing with things already having been destroyed.
+		return n.Addr.InModule(addrs.RootModule), nil, defnRange
+	}
+
+	var rules []*configs.CheckRule
+	if n.Config != nil { // always in normal code, but sometimes not in unit tests
+		rules = n.Config.Validations
+	}
+	return n.Addr.InModule(addrs.RootModule), rules, defnRange
 }

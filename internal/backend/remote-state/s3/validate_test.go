@@ -38,25 +38,9 @@ func TestValidateKMSKey(t *testing.T) {
 		},
 		"kms key alias": {
 			in: "alias/arbitrary-key",
-			expected: tfdiags.Diagnostics{
-				tfdiags.AttributeValue(
-					tfdiags.Error,
-					"Invalid KMS Key ID",
-					`Value must be a valid KMS Key ID, got "alias/arbitrary-key"`,
-					path,
-				),
-			},
 		},
 		"kms key alias arn": {
 			in: "arn:aws:kms:us-west-2:111122223333:alias/arbitrary-key",
-			expected: tfdiags.Diagnostics{
-				tfdiags.AttributeValue(
-					tfdiags.Error,
-					"Invalid KMS Key ARN",
-					`Value must be a valid KMS Key ARN, got "arn:aws:kms:us-west-2:111122223333:alias/arbitrary-key"`,
-					path,
-				),
-			},
 		},
 		"invalid key": {
 			in: "$%wrongkey",
@@ -650,6 +634,203 @@ func TestValidateDurationBetween(t *testing.T) {
 
 			var diags tfdiags.Diagnostics
 			validateDurationBetween(min, max)(testcase.val, path, &diags)
+
+			if diff := cmp.Diff(diags, testcase.expected, cmp.Comparer(diagnosticComparer)); diff != "" {
+				t.Errorf("unexpected diagnostics difference: %s", diff)
+			}
+		})
+	}
+}
+
+func TestValidateStringLegacyURL(t *testing.T) {
+	t.Parallel()
+
+	path := cty.GetAttrPath("field")
+
+	testcases := map[string]struct {
+		val      string
+		expected tfdiags.Diagnostics
+	}{
+		"no trailing slash": {
+			val: "https://domain.test",
+		},
+
+		"no path": {
+			val: "https://domain.test/",
+		},
+
+		"with path": {
+			val: "https://domain.test/path",
+		},
+
+		"with port no trailing slash": {
+			val: "https://domain.test:1234",
+		},
+
+		"with port no path": {
+			val: "https://domain.test:1234/",
+		},
+
+		"with port with path": {
+			val: "https://domain.test:1234/path",
+		},
+
+		"no scheme no trailing slash": {
+			val: "domain.test",
+			expected: tfdiags.Diagnostics{
+				legacyIncompleteURLDiag("domain.test", path),
+			},
+		},
+
+		"no scheme no path": {
+			val: "domain.test/",
+			expected: tfdiags.Diagnostics{
+				legacyIncompleteURLDiag("domain.test/", path),
+			},
+		},
+
+		"no scheme with path": {
+			val: "domain.test/path",
+			expected: tfdiags.Diagnostics{
+				legacyIncompleteURLDiag("domain.test/path", path),
+			},
+		},
+
+		"no scheme with port": {
+			val: "domain.test:1234",
+			expected: tfdiags.Diagnostics{
+				legacyIncompleteURLDiag("domain.test:1234", path),
+			},
+		},
+	}
+
+	for name, testcase := range testcases {
+		testcase := testcase
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var diags tfdiags.Diagnostics
+			validateStringLegacyURL(testcase.val, path, &diags)
+
+			if diff := cmp.Diff(diags, testcase.expected, cmp.Comparer(diagnosticComparer)); diff != "" {
+				t.Errorf("unexpected diagnostics difference: %s", diff)
+			}
+		})
+	}
+}
+
+func TestValidateStringValidURL(t *testing.T) {
+	t.Parallel()
+
+	path := cty.GetAttrPath("field")
+
+	testcases := map[string]struct {
+		val      string
+		expected tfdiags.Diagnostics
+	}{
+		"no trailing slash": {
+			val: "https://domain.test",
+		},
+
+		"no path": {
+			val: "https://domain.test/",
+		},
+
+		"with path": {
+			val: "https://domain.test/path",
+		},
+
+		"with port no trailing slash": {
+			val: "https://domain.test:1234",
+		},
+
+		"with port no path": {
+			val: "https://domain.test:1234/",
+		},
+
+		"with port with path": {
+			val: "https://domain.test:1234/path",
+		},
+
+		"no scheme no trailing slash": {
+			val: "domain.test",
+			expected: tfdiags.Diagnostics{
+				invalidURLDiag("domain.test", path),
+			},
+		},
+
+		"no scheme no path": {
+			val: "domain.test/",
+			expected: tfdiags.Diagnostics{
+				invalidURLDiag("domain.test/", path),
+			},
+		},
+
+		"no scheme with path": {
+			val: "domain.test/path",
+			expected: tfdiags.Diagnostics{
+				invalidURLDiag("domain.test/path", path),
+			},
+		},
+
+		"no scheme with port": {
+			val: "domain.test:1234",
+			expected: tfdiags.Diagnostics{
+				invalidURLDiag("domain.test:1234", path),
+			},
+		},
+	}
+
+	for name, testcase := range testcases {
+		testcase := testcase
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var diags tfdiags.Diagnostics
+			validateStringValidURL(testcase.val, path, &diags)
+
+			if diff := cmp.Diff(diags, testcase.expected, cmp.Comparer(diagnosticComparer)); diff != "" {
+				t.Errorf("unexpected diagnostics difference: %s", diff)
+			}
+		})
+	}
+}
+
+func Test_validateStringDoesNotContain(t *testing.T) {
+	t.Parallel()
+
+	path := cty.GetAttrPath("field")
+
+	testcases := map[string]struct {
+		val      string
+		s        string
+		expected tfdiags.Diagnostics
+	}{
+		"valid": {
+			val: "foo",
+			s:   "bar",
+		},
+
+		"invalid": {
+			val: "foobarbaz",
+			s:   "bar",
+			expected: tfdiags.Diagnostics{
+				attributeErrDiag(
+					"Invalid Value",
+					`Value must not contain "bar"`,
+					path,
+				),
+			},
+		},
+	}
+
+	for name, testcase := range testcases {
+		testcase := testcase
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var diags tfdiags.Diagnostics
+			validateStringDoesNotContain(testcase.s)(testcase.val, path, &diags)
 
 			if diff := cmp.Diff(diags, testcase.expected, cmp.Comparer(diagnosticComparer)); diff != "" {
 				t.Errorf("unexpected diagnostics difference: %s", diff)

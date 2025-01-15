@@ -10,14 +10,16 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hcltest"
+	"github.com/zclconf/go-cty/cty"
+
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/configs/configschema"
 	"github.com/hashicorp/terraform/internal/lang/marks"
 	"github.com/hashicorp/terraform/internal/providers"
+	testing_provider "github.com/hashicorp/terraform/internal/providers/testing"
 	"github.com/hashicorp/terraform/internal/provisioners"
 	"github.com/hashicorp/terraform/internal/tfdiags"
-	"github.com/zclconf/go-cty/cty"
 )
 
 func TestNodeValidatableResource_ValidateProvisioner_valid(t *testing.T) {
@@ -54,7 +56,7 @@ func TestNodeValidatableResource_ValidateProvisioner_valid(t *testing.T) {
 		},
 	}
 
-	diags := node.validateProvisioner(ctx, pc)
+	diags := node.validateProvisioner(ctx, pc, nil)
 	if diags.HasErrors() {
 		t.Fatalf("node.Eval failed: %s", diags.Err())
 	}
@@ -99,7 +101,7 @@ func TestNodeValidatableResource_ValidateProvisioner__warning(t *testing.T) {
 		}
 	}
 
-	diags := node.validateProvisioner(ctx, pc)
+	diags := node.validateProvisioner(ctx, pc, nil)
 	if len(diags) != 1 {
 		t.Fatalf("wrong number of diagnostics in %s; want one warning", diags.ErrWithWarnings())
 	}
@@ -144,7 +146,57 @@ func TestNodeValidatableResource_ValidateProvisioner__connectionInvalid(t *testi
 		},
 	}
 
-	diags := node.validateProvisioner(ctx, pc)
+	diags := node.validateProvisioner(ctx, pc, nil)
+	if !diags.HasErrors() {
+		t.Fatalf("node.Eval succeeded; want error")
+	}
+	if len(diags) != 3 {
+		t.Fatalf("wrong number of diagnostics; want two errors\n\n%s", diags.Err())
+	}
+
+	errStr := diags.Err().Error()
+	if !(strings.Contains(errStr, "bananananananana") && strings.Contains(errStr, "bazaz")) {
+		t.Fatalf("wrong errors %q; want something about each of our invalid connInfo keys", errStr)
+	}
+}
+
+func TestNodeValidatableResource_ValidateProvisioner_baseConnInvalid(t *testing.T) {
+	ctx := &MockEvalContext{}
+	ctx.installSimpleEval()
+	mp := &MockProvisioner{}
+	ps := &configschema.Block{}
+	ctx.ProvisionerSchemaSchema = ps
+	ctx.ProvisionerProvisioner = mp
+
+	pc := &configs.Provisioner{
+		Type:   "baz",
+		Config: hcl.EmptyBody(),
+	}
+
+	baseConn := &configs.Connection{
+		Config: configs.SynthBody("", map[string]cty.Value{
+			"type":             cty.StringVal("ssh"),
+			"bananananananana": cty.StringVal("foo"),
+			"bazaz":            cty.StringVal("bar"),
+		}),
+	}
+
+	rc := &configs.Resource{
+		Mode:    addrs.ManagedResourceMode,
+		Type:    "test_foo",
+		Name:    "bar",
+		Config:  configs.SynthBody("", map[string]cty.Value{}),
+		Managed: &configs.ManagedResource{},
+	}
+
+	node := NodeValidatableResource{
+		NodeAbstractResource: &NodeAbstractResource{
+			Addr:   mustConfigResourceAddr("test_foo.bar"),
+			Config: rc,
+		},
+	}
+
+	diags := node.validateProvisioner(ctx, pc, baseConn)
 	if !diags.HasErrors() {
 		t.Fatalf("node.Eval succeeded; want error")
 	}
@@ -568,7 +620,7 @@ func TestNodeValidatableResource_ValidateResource_invalidIgnoreChangesComputed(t
 		},
 	}
 
-	mp := &MockProvider{
+	mp := &testing_provider.MockProvider{
 		GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
 			Provider: providers.Schema{Block: ms},
 			ResourceTypes: map[string]providers.Schema{

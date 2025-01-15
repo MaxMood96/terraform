@@ -3,7 +3,7 @@
 
 package http
 
-//go:generate go run github.com/golang/mock/mockgen -package $GOPACKAGE -source $GOFILE -destination mock_$GOFILE
+//go:generate go run go.uber.org/mock/mockgen -package $GOPACKAGE -source $GOFILE -destination mock_$GOFILE
 
 import (
 	"context"
@@ -22,12 +22,12 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/backend"
 	"github.com/hashicorp/terraform/internal/configs"
 	"github.com/hashicorp/terraform/internal/states"
 	"github.com/zclconf/go-cty/cty"
+	"go.uber.org/mock/gomock"
 )
 
 const sampleState = `
@@ -284,7 +284,7 @@ func TestMTLSServer_NoCertFails(t *testing.T) {
 	err = sm.RefreshState()
 	if nil == err {
 		t.Error("expected error when refreshing state without a client cert")
-	} else if !strings.Contains(err.Error(), "remote error: tls: bad certificate") {
+	} else if !strings.Contains(err.Error(), "remote error: tls: certificate required") {
 		t.Errorf("expected the error to report missing tls credentials: %v", err)
 	}
 }

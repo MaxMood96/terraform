@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	configtesting "github.com/hashicorp/aws-sdk-go-base/v2/configtesting"
 	"github.com/hashicorp/aws-sdk-go-base/v2/mockdata"
 	"github.com/hashicorp/aws-sdk-go-base/v2/servicemocks"
 	"github.com/hashicorp/terraform/internal/configs/hcl2shim"
@@ -63,6 +64,7 @@ type diagValidator func(*testing.T, tfdiags.Diagnostic)
 
 func ExpectDiags(validators ...diagValidator) DiagsValidator {
 	return func(t *testing.T, diags tfdiags.Diagnostics) {
+		t.Helper()
 		count := len(validators)
 		if l := len(diags); l < count {
 			count = l
@@ -78,6 +80,7 @@ func ExpectDiags(validators ...diagValidator) DiagsValidator {
 
 func diagMatching(severity tfdiags.Severity, summary matcher, detail matcher) diagValidator {
 	return func(t *testing.T, diag tfdiags.Diagnostic) {
+		t.Helper()
 		if severity != diag.Severity() || !summary.Match(diag.Description().Summary) || !detail.Match(diag.Description().Detail) {
 			t.Errorf("expected Diagnostic matching %#v, got %#v",
 				tfdiags.Sourceless(
@@ -205,8 +208,7 @@ aws_secret_access_key = ProfileSharedCredentialsSecretKey
 
 		"environment AWS_ACCESS_KEY_ID does not override config Profile": {
 			config: map[string]any{
-				"profile":             "SharedCredentialsProfile",
-				"use_legacy_workflow": false,
+				"profile": "SharedCredentialsProfile",
 			},
 			EnvironmentVariables: map[string]string{
 				"AWS_ACCESS_KEY_ID":     servicemocks.MockEnvAccessKey,
@@ -217,30 +219,6 @@ aws_secret_access_key = ProfileSharedCredentialsSecretKey
 				SecretAccessKey: "ProfileSharedCredentialsSecretKey",
 				Source:          sharedConfigCredentialsProvider,
 			},
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			SharedCredentialsFile: `
-[default]
-aws_access_key_id = DefaultSharedCredentialsAccessKey
-aws_secret_access_key = DefaultSharedCredentialsSecretKey
-
-[SharedCredentialsProfile]
-aws_access_key_id = ProfileSharedCredentialsAccessKey
-aws_secret_access_key = ProfileSharedCredentialsSecretKey
-`,
-			ValidateDiags: ExpectNoDiags,
-		},
-
-		"environment AWS_ACCESS_KEY_ID overrides config Profile in legacy workflow": { // Legacy behavior
-			config: map[string]any{
-				"profile": "SharedCredentialsProfile",
-			},
-			EnvironmentVariables: map[string]string{
-				"AWS_ACCESS_KEY_ID":     servicemocks.MockEnvAccessKey,
-				"AWS_SECRET_ACCESS_KEY": servicemocks.MockEnvSecretKey,
-			},
-			ExpectedCredentialsValue: mockdata.MockEnvCredentials,
 			MockStsEndpoints: []*servicemocks.MockEndpoint{
 				servicemocks.MockStsGetCallerIdentityValidEndpoint,
 			},
@@ -351,25 +329,6 @@ aws_secret_access_key = DefaultSharedCredentialsSecretKey
 			MockStsEndpoints: []*servicemocks.MockEndpoint{
 				servicemocks.MockStsGetCallerIdentityValidEndpoint,
 			},
-		},
-
-		"AssumeWebIdentity envvar AssumeRoleARN access key": {
-			config: map[string]any{
-				"role_arn":     servicemocks.MockStsAssumeRoleArn,
-				"session_name": servicemocks.MockStsAssumeRoleSessionName,
-			},
-			EnableWebIdentityEnvVars: true,
-			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsAssumeRoleWithWebIdentityValidEndpoint,
-				servicemocks.MockStsAssumeRoleValidEndpoint,
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			ValidateDiags: ExpectDiagMatching(
-				tfdiags.Warning,
-				equalsMatcher("Deprecated Parameters"),
-				ignoreMatcher{},
-			),
 		},
 
 		"config AccessKey over environment AWS_ACCESS_KEY_ID": {
@@ -626,8 +585,7 @@ aws_secret_access_key = DefaultSharedCredentialsSecretKey
 		tc := tc
 
 		t.Run(name, func(t *testing.T) {
-			oldEnv := servicemocks.InitSessionTestEnv()
-			defer servicemocks.PopEnv(oldEnv)
+			servicemocks.InitSessionTestEnv(t)
 
 			ctx := context.TODO()
 
@@ -669,9 +627,9 @@ aws_secret_access_key = DefaultSharedCredentialsSecretKey
 				}
 
 				if tc.EnableWebIdentityEnvVars {
-					os.Setenv("AWS_ROLE_ARN", servicemocks.MockStsAssumeRoleWithWebIdentityArn)
-					os.Setenv("AWS_ROLE_SESSION_NAME", servicemocks.MockStsAssumeRoleWithWebIdentitySessionName)
-					os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", file.Name())
+					t.Setenv("AWS_ROLE_ARN", servicemocks.MockStsAssumeRoleWithWebIdentityArn)
+					t.Setenv("AWS_ROLE_SESSION_NAME", servicemocks.MockStsAssumeRoleWithWebIdentitySessionName)
+					t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", file.Name())
 				} /*else if tc.EnableWebIdentityConfig {
 					tc.Config.AssumeRoleWithWebIdentity = &AssumeRoleWithWebIdentity{
 						RoleARN:              servicemocks.MockStsAssumeRoleWithWebIdentityArn,
@@ -703,7 +661,7 @@ aws_secret_access_key = DefaultSharedCredentialsSecretKey
 					t.Fatalf("unexpected error writing shared configuration file: %s", err)
 				}
 
-				setSharedConfigFile(file.Name())
+				setSharedConfigFile(t, file.Name())
 			}
 
 			if tc.SharedCredentialsFile != "" {
@@ -728,7 +686,7 @@ aws_secret_access_key = DefaultSharedCredentialsSecretKey
 			}
 
 			for k, v := range tc.EnvironmentVariables {
-				os.Setenv(k, v)
+				t.Setenv(k, v)
 			}
 
 			b, diags := configureBackend(t, tc.config)
@@ -742,482 +700,6 @@ aws_secret_access_key = DefaultSharedCredentialsSecretKey
 			credentials, err := b.awsConfig.Credentials.Retrieve(ctx)
 			if err != nil {
 				t.Fatalf("Error when requesting credentials")
-			}
-
-			if diff := cmp.Diff(credentials, tc.ExpectedCredentialsValue, cmpopts.IgnoreFields(aws.Credentials{}, "Expires")); diff != "" {
-				t.Fatalf("unexpected credentials: (- got, + expected)\n%s", diff)
-			}
-		})
-	}
-}
-
-func TestBackendConfig_Authentication_AssumeRoleInline(t *testing.T) {
-	testCases := map[string]struct {
-		config                     map[string]any
-		EnableEc2MetadataServer    bool
-		EnableEcsCredentialsServer bool
-		EnvironmentVariables       map[string]string
-		ExpectedCredentialsValue   aws.Credentials
-		MockStsEndpoints           []*servicemocks.MockEndpoint
-		SharedConfigurationFile    string
-		SharedCredentialsFile      string
-		ValidateDiags              DiagsValidator
-	}{
-		// WAS: "config AccessKey config AssumeRoleARN access key"
-		"from config access_key": {
-			config: map[string]any{
-				"access_key":   servicemocks.MockStaticAccessKey,
-				"secret_key":   servicemocks.MockStaticSecretKey,
-				"role_arn":     servicemocks.MockStsAssumeRoleArn,
-				"session_name": servicemocks.MockStsAssumeRoleSessionName,
-			},
-			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsAssumeRoleValidEndpoint,
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			ValidateDiags: ExpectDiagMatching(
-				tfdiags.Warning,
-				equalsMatcher("Deprecated Parameters"),
-				ignoreMatcher{},
-			),
-		},
-
-		// WAS: "environment AWS_ACCESS_KEY_ID config AssumeRoleARN access key"
-		"from environment AWS_ACCESS_KEY_ID": {
-			config: map[string]any{
-				"role_arn":     servicemocks.MockStsAssumeRoleArn,
-				"session_name": servicemocks.MockStsAssumeRoleSessionName,
-			},
-			EnvironmentVariables: map[string]string{
-				"AWS_ACCESS_KEY_ID":     servicemocks.MockEnvAccessKey,
-				"AWS_SECRET_ACCESS_KEY": servicemocks.MockEnvSecretKey,
-			},
-			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsAssumeRoleValidEndpoint,
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			ValidateDiags: ExpectDiagMatching(
-				tfdiags.Warning,
-				equalsMatcher("Deprecated Parameters"),
-				ignoreMatcher{},
-			),
-		},
-
-		// WAS: "config Profile shared configuration credential_source Ec2InstanceMetadata"
-		"from config Profile with Ec2InstanceMetadata source": {
-			config: map[string]any{
-				"profile": "SharedConfigurationProfile",
-			},
-			EnableEc2MetadataServer:  true,
-			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsAssumeRoleValidEndpoint,
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			SharedConfigurationFile: fmt.Sprintf(`
-[profile SharedConfigurationProfile]
-credential_source = Ec2InstanceMetadata
-role_arn = %[1]s
-role_session_name = %[2]s
-`, servicemocks.MockStsAssumeRoleArn, servicemocks.MockStsAssumeRoleSessionName),
-		},
-
-		// WAS: "environment AWS_PROFILE shared configuration credential_source Ec2InstanceMetadata"
-		"from environment AWS_PROFILE with Ec2InstanceMetadata source": {
-			config:                  map[string]any{},
-			EnableEc2MetadataServer: true,
-			EnvironmentVariables: map[string]string{
-				"AWS_PROFILE": "SharedConfigurationProfile",
-			},
-			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsAssumeRoleValidEndpoint,
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			SharedConfigurationFile: fmt.Sprintf(`
-[profile SharedConfigurationProfile]
-credential_source = Ec2InstanceMetadata
-role_arn = %[1]s
-role_session_name = %[2]s
-`, servicemocks.MockStsAssumeRoleArn, servicemocks.MockStsAssumeRoleSessionName),
-		},
-
-		// WAS: "config Profile shared configuration source_profile"
-		"from config Profile with source profile": {
-			config: map[string]any{
-				"profile": "SharedConfigurationProfile",
-			},
-			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsAssumeRoleValidEndpoint,
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			SharedConfigurationFile: fmt.Sprintf(`
-[profile SharedConfigurationProfile]
-role_arn = %[1]s
-role_session_name = %[2]s
-source_profile = SharedConfigurationSourceProfile
-
-[profile SharedConfigurationSourceProfile]
-aws_access_key_id = SharedConfigurationSourceAccessKey
-aws_secret_access_key = SharedConfigurationSourceSecretKey
-`, servicemocks.MockStsAssumeRoleArn, servicemocks.MockStsAssumeRoleSessionName),
-		},
-
-		// WAS: "environment AWS_PROFILE shared configuration source_profile"
-		"from environment AWS_PROFILE with source profile": {
-			config: map[string]any{},
-			EnvironmentVariables: map[string]string{
-				"AWS_PROFILE": "SharedConfigurationProfile",
-			},
-			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsAssumeRoleValidEndpoint,
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			SharedConfigurationFile: fmt.Sprintf(`
-[profile SharedConfigurationProfile]
-role_arn = %[1]s
-role_session_name = %[2]s
-source_profile = SharedConfigurationSourceProfile
-
-[profile SharedConfigurationSourceProfile]
-aws_access_key_id = SharedConfigurationSourceAccessKey
-aws_secret_access_key = SharedConfigurationSourceSecretKey
-`, servicemocks.MockStsAssumeRoleArn, servicemocks.MockStsAssumeRoleSessionName),
-		},
-
-		// WAS: "shared credentials default aws_access_key_id config AssumeRoleARN access key"
-		"from default profile": {
-			config: map[string]any{
-				"role_arn":     servicemocks.MockStsAssumeRoleArn,
-				"session_name": servicemocks.MockStsAssumeRoleSessionName,
-			},
-			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsAssumeRoleValidEndpoint,
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			SharedCredentialsFile: `
-[default]
-aws_access_key_id = DefaultSharedCredentialsAccessKey
-aws_secret_access_key = DefaultSharedCredentialsSecretKey
-`,
-			ValidateDiags: ExpectDiagMatching(
-				tfdiags.Warning,
-				equalsMatcher("Deprecated Parameters"),
-				ignoreMatcher{},
-			),
-		},
-
-		// WAS: "EC2 metadata access key config AssumeRoleARN access key"
-		"from EC2 metadata": {
-			config: map[string]any{
-				"role_arn":     servicemocks.MockStsAssumeRoleArn,
-				"session_name": servicemocks.MockStsAssumeRoleSessionName,
-			},
-			EnableEc2MetadataServer:  true,
-			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsAssumeRoleValidEndpoint,
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			ValidateDiags: ExpectDiagMatching(
-				tfdiags.Warning,
-				equalsMatcher("Deprecated Parameters"),
-				ignoreMatcher{},
-			),
-		},
-
-		// WAS: "ECS credentials access key config AssumeRoleARN access key"
-		"from ECS credentials": {
-			config: map[string]any{
-				"role_arn":     servicemocks.MockStsAssumeRoleArn,
-				"session_name": servicemocks.MockStsAssumeRoleSessionName,
-			},
-			EnableEcsCredentialsServer: true,
-			ExpectedCredentialsValue:   mockdata.MockStsAssumeRoleCredentials,
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsAssumeRoleValidEndpoint,
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			ValidateDiags: ExpectDiagMatching(
-				tfdiags.Warning,
-				equalsMatcher("Deprecated Parameters"),
-				ignoreMatcher{},
-			),
-		},
-
-		// WAS: "config AssumeRoleDuration"
-		"with duration": {
-			config: map[string]any{
-				"access_key":                   servicemocks.MockStaticAccessKey,
-				"secret_key":                   servicemocks.MockStaticSecretKey,
-				"role_arn":                     servicemocks.MockStsAssumeRoleArn,
-				"session_name":                 servicemocks.MockStsAssumeRoleSessionName,
-				"assume_role_duration_seconds": 3600,
-			},
-			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsAssumeRoleValidEndpointWithOptions(map[string]string{"DurationSeconds": "3600"}),
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			ValidateDiags: ExpectDiagMatching(
-				tfdiags.Warning,
-				equalsMatcher("Deprecated Parameters"),
-				ignoreMatcher{},
-			),
-		},
-
-		// WAS: "config AssumeRoleExternalID"
-		"with external ID": {
-			config: map[string]any{
-				"access_key":   servicemocks.MockStaticAccessKey,
-				"secret_key":   servicemocks.MockStaticSecretKey,
-				"role_arn":     servicemocks.MockStsAssumeRoleArn,
-				"session_name": servicemocks.MockStsAssumeRoleSessionName,
-				"external_id":  servicemocks.MockStsAssumeRoleExternalId,
-			},
-			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsAssumeRoleValidEndpointWithOptions(map[string]string{"ExternalId": servicemocks.MockStsAssumeRoleExternalId}),
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			ValidateDiags: ExpectDiagMatching(
-				tfdiags.Warning,
-				equalsMatcher("Deprecated Parameters"),
-				ignoreMatcher{},
-			),
-		},
-
-		// WAS: "config AssumeRolePolicy"
-		"with policy": {
-			config: map[string]any{
-				"access_key":         servicemocks.MockStaticAccessKey,
-				"secret_key":         servicemocks.MockStaticSecretKey,
-				"role_arn":           servicemocks.MockStsAssumeRoleArn,
-				"session_name":       servicemocks.MockStsAssumeRoleSessionName,
-				"assume_role_policy": mockStsAssumeRolePolicy,
-			},
-			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsAssumeRoleValidEndpointWithOptions(map[string]string{"Policy": mockStsAssumeRolePolicy}),
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			ValidateDiags: ExpectDiagMatching(
-				tfdiags.Warning,
-				equalsMatcher("Deprecated Parameters"),
-				ignoreMatcher{},
-			),
-		},
-
-		// WAS: "config AssumeRolePolicyARNs"
-		"with policy ARNs": {
-			config: map[string]any{
-				"access_key":              servicemocks.MockStaticAccessKey,
-				"secret_key":              servicemocks.MockStaticSecretKey,
-				"role_arn":                servicemocks.MockStsAssumeRoleArn,
-				"session_name":            servicemocks.MockStsAssumeRoleSessionName,
-				"assume_role_policy_arns": []any{servicemocks.MockStsAssumeRolePolicyArn},
-			},
-			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsAssumeRoleValidEndpointWithOptions(map[string]string{"PolicyArns.member.1.arn": servicemocks.MockStsAssumeRolePolicyArn}),
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			ValidateDiags: ExpectDiagMatching(
-				tfdiags.Warning,
-				equalsMatcher("Deprecated Parameters"),
-				ignoreMatcher{},
-			),
-		},
-
-		// WAS: "config AssumeRoleTags"
-		"with tags": {
-			config: map[string]any{
-				"access_key":   servicemocks.MockStaticAccessKey,
-				"secret_key":   servicemocks.MockStaticSecretKey,
-				"role_arn":     servicemocks.MockStsAssumeRoleArn,
-				"session_name": servicemocks.MockStsAssumeRoleSessionName,
-				"assume_role_tags": map[string]any{
-					servicemocks.MockStsAssumeRoleTagKey: servicemocks.MockStsAssumeRoleTagValue,
-				},
-			},
-			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsAssumeRoleValidEndpointWithOptions(map[string]string{"Tags.member.1.Key": servicemocks.MockStsAssumeRoleTagKey, "Tags.member.1.Value": servicemocks.MockStsAssumeRoleTagValue}),
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			ValidateDiags: ExpectDiagMatching(
-				tfdiags.Warning,
-				equalsMatcher("Deprecated Parameters"),
-				ignoreMatcher{},
-			),
-		},
-
-		// WAS: "config AssumeRoleTransitiveTagKeys"
-		"with transitive tags": {
-			config: map[string]any{
-				"access_key":   servicemocks.MockStaticAccessKey,
-				"secret_key":   servicemocks.MockStaticSecretKey,
-				"role_arn":     servicemocks.MockStsAssumeRoleArn,
-				"session_name": servicemocks.MockStsAssumeRoleSessionName,
-				"assume_role_tags": map[string]any{
-					servicemocks.MockStsAssumeRoleTagKey: servicemocks.MockStsAssumeRoleTagValue,
-				},
-				"assume_role_transitive_tag_keys": []any{servicemocks.MockStsAssumeRoleTagKey},
-			},
-			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsAssumeRoleValidEndpointWithOptions(map[string]string{"Tags.member.1.Key": servicemocks.MockStsAssumeRoleTagKey, "Tags.member.1.Value": servicemocks.MockStsAssumeRoleTagValue, "TransitiveTagKeys.member.1": servicemocks.MockStsAssumeRoleTagKey}),
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			ValidateDiags: ExpectDiagMatching(
-				tfdiags.Warning,
-				equalsMatcher("Deprecated Parameters"),
-				ignoreMatcher{},
-			),
-		},
-
-		// NOT SUPPORTED: AssumeRoleSourceIdentity
-		// WAS: "config AssumeRoleSourceIdentity"
-		// "with source identity": {
-		// 	config: map[string]any{
-		// 		"access_key":                  servicemocks.MockStaticAccessKey,
-		// 		"secret_key":                  servicemocks.MockStaticSecretKey,
-		// 		"role_arn":                    servicemocks.MockStsAssumeRoleArn,
-		// 		"session_name":                servicemocks.MockStsAssumeRoleSessionName,
-		// 		"assume_role_source_identity": servicemocks.MockStsAssumeRoleSourceIdentity,
-		// 	},
-		// 	ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
-		// 	MockStsEndpoints: []*servicemocks.MockEndpoint{
-		// 		servicemocks.MockStsAssumeRoleValidEndpointWithOptions(map[string]string{"SourceIdentity": servicemocks.MockStsAssumeRoleSourceIdentity}),
-		// 		servicemocks.MockStsGetCallerIdentityValidEndpoint,
-		// 	},
-		// },
-
-		// WAS: "assume role error"
-		"error": {
-			config: map[string]any{
-				"access_key":   servicemocks.MockStaticAccessKey,
-				"secret_key":   servicemocks.MockStaticSecretKey,
-				"role_arn":     servicemocks.MockStsAssumeRoleArn,
-				"session_name": servicemocks.MockStsAssumeRoleSessionName,
-			},
-			MockStsEndpoints: []*servicemocks.MockEndpoint{
-				servicemocks.MockStsAssumeRoleInvalidEndpointInvalidClientTokenId,
-				servicemocks.MockStsGetCallerIdentityValidEndpoint,
-			},
-			ValidateDiags: ExpectDiags(
-				diagMatching(
-					tfdiags.Warning,
-					equalsMatcher("Deprecated Parameters"),
-					ignoreMatcher{},
-				),
-				diagMatching(
-					tfdiags.Error,
-					equalsMatcher("Cannot assume IAM Role"),
-					newRegexpMatcher(`IAM Role \(.+\) cannot be assumed.`),
-				),
-			),
-		},
-	}
-
-	for name, tc := range testCases {
-		tc := tc
-
-		t.Run(name, func(t *testing.T) {
-			oldEnv := servicemocks.InitSessionTestEnv()
-			defer servicemocks.PopEnv(oldEnv)
-
-			ctx := context.TODO()
-
-			// Populate required fields
-			tc.config["region"] = "us-east-1"
-			tc.config["bucket"] = "bucket"
-			tc.config["key"] = "key"
-
-			if tc.ValidateDiags == nil {
-				tc.ValidateDiags = ExpectNoDiags
-			}
-
-			if tc.EnableEc2MetadataServer {
-				closeEc2Metadata := servicemocks.AwsMetadataApiMock(append(
-					servicemocks.Ec2metadata_securityCredentialsEndpoints,
-					servicemocks.Ec2metadata_instanceIdEndpoint,
-					servicemocks.Ec2metadata_iamInfoEndpoint,
-				))
-				defer closeEc2Metadata()
-			}
-
-			if tc.EnableEcsCredentialsServer {
-				closeEcsCredentials := servicemocks.EcsCredentialsApiMock()
-				defer closeEcsCredentials()
-			}
-
-			ts := servicemocks.MockAwsApiServer("STS", tc.MockStsEndpoints)
-			defer ts.Close()
-
-			tc.config["endpoints"] = map[string]any{
-				"sts": ts.URL,
-			}
-
-			if tc.SharedConfigurationFile != "" {
-				file, err := os.CreateTemp("", "aws-sdk-go-base-shared-configuration-file")
-
-				if err != nil {
-					t.Fatalf("unexpected error creating temporary shared configuration file: %s", err)
-				}
-
-				defer os.Remove(file.Name())
-
-				err = os.WriteFile(file.Name(), []byte(tc.SharedConfigurationFile), 0600)
-
-				if err != nil {
-					t.Fatalf("unexpected error writing shared configuration file: %s", err)
-				}
-
-				setSharedConfigFile(file.Name())
-			}
-
-			if tc.SharedCredentialsFile != "" {
-				file, err := os.CreateTemp("", "aws-sdk-go-base-shared-credentials-file")
-
-				if err != nil {
-					t.Fatalf("unexpected error creating temporary shared credentials file: %s", err)
-				}
-
-				defer os.Remove(file.Name())
-
-				err = os.WriteFile(file.Name(), []byte(tc.SharedCredentialsFile), 0600)
-
-				if err != nil {
-					t.Fatalf("unexpected error writing shared credentials file: %s", err)
-				}
-
-				tc.config["shared_credentials_files"] = []interface{}{file.Name()}
-				if tc.ExpectedCredentialsValue.Source == sharedConfigCredentialsProvider {
-					tc.ExpectedCredentialsValue.Source = sharedConfigCredentialsSource(file.Name())
-				}
-			}
-
-			for k, v := range tc.EnvironmentVariables {
-				os.Setenv(k, v)
-			}
-
-			b, diags := configureBackend(t, tc.config)
-
-			tc.ValidateDiags(t, diags)
-
-			if diags.HasErrors() {
-				return
-			}
-
-			credentials, err := b.awsConfig.Credentials.Retrieve(ctx)
-			if err != nil {
-				t.Fatalf("Error when requesting credentials: %s", err)
 			}
 
 			if diff := cmp.Diff(credentials, tc.ExpectedCredentialsValue, cmpopts.IgnoreFields(aws.Credentials{}, "Expires")); diff != "" {
@@ -1524,24 +1006,23 @@ aws_secret_access_key = DefaultSharedCredentialsSecretKey
 			},
 		},
 
-		// NOT SUPPORTED: AssumeRoleSourceIdentity
 		// WAS: "config AssumeRoleSourceIdentity"
-		// "with source identity": {
-		// 	config: map[string]any{
-		// 		"access_key": servicemocks.MockStaticAccessKey,
-		// 		"secret_key": servicemocks.MockStaticSecretKey,
-		// 		"assume_role": map[string]any{
-		// 			"role_arn":        servicemocks.MockStsAssumeRoleArn,
-		// 			"session_name":    servicemocks.MockStsAssumeRoleSessionName,
-		// 			"source_identity": servicemocks.MockStsAssumeRoleSourceIdentity,
-		// 		},
-		// 	},
-		// 	ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
-		// 	MockStsEndpoints: []*servicemocks.MockEndpoint{
-		// 		servicemocks.MockStsAssumeRoleValidEndpointWithOptions(map[string]string{"SourceIdentity": servicemocks.MockStsAssumeRoleSourceIdentity}),
-		// 		servicemocks.MockStsGetCallerIdentityValidEndpoint,
-		// 	},
-		// },
+		"with source identity": {
+			config: map[string]any{
+				"access_key": servicemocks.MockStaticAccessKey,
+				"secret_key": servicemocks.MockStaticSecretKey,
+				"assume_role": map[string]any{
+					"role_arn":        servicemocks.MockStsAssumeRoleArn,
+					"session_name":    servicemocks.MockStsAssumeRoleSessionName,
+					"source_identity": servicemocks.MockStsAssumeRoleSourceIdentity,
+				},
+			},
+			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleCredentials,
+			MockStsEndpoints: []*servicemocks.MockEndpoint{
+				servicemocks.MockStsAssumeRoleValidEndpointWithOptions(map[string]string{"SourceIdentity": servicemocks.MockStsAssumeRoleSourceIdentity}),
+				servicemocks.MockStsGetCallerIdentityValidEndpoint,
+			},
+		},
 
 		// WAS: "assume role error"
 		"error": {
@@ -1565,14 +1046,48 @@ aws_secret_access_key = DefaultSharedCredentialsSecretKey
 				),
 			),
 		},
+
+		"empty role_arn": {
+			config: map[string]any{
+				"access_key": servicemocks.MockStaticAccessKey,
+				"secret_key": servicemocks.MockStaticSecretKey,
+				"assume_role": map[string]any{
+					"role_arn": "",
+				},
+			},
+			ValidateDiags: ExpectDiagsEqual(tfdiags.Diagnostics{
+				attributeErrDiag(
+					"Invalid Value",
+					"The value cannot be empty or all whitespace",
+					cty.GetAttrPath("assume_role").GetAttr("role_arn"),
+				),
+			}),
+		},
+
+		"nil role_arn": {
+			config: map[string]any{
+				"access_key": servicemocks.MockStaticAccessKey,
+				"secret_key": servicemocks.MockStaticSecretKey,
+				"assume_role": map[string]any{
+					"role_arn": nil,
+				},
+			},
+			ValidateDiags: ExpectDiagsEqual(tfdiags.Diagnostics{
+				attributeErrDiag(
+					"Missing Required Value",
+					`The attribute "assume_role.role_arn" is required by the backend.`+"\n\n"+
+						"Refer to the backend documentation for additional information which attributes are required.",
+					cty.GetAttrPath("assume_role").GetAttr("role_arn"),
+				),
+			}),
+		},
 	}
 
 	for name, tc := range testCases {
 		tc := tc
 
 		t.Run(name, func(t *testing.T) {
-			oldEnv := servicemocks.InitSessionTestEnv()
-			defer servicemocks.PopEnv(oldEnv)
+			servicemocks.InitSessionTestEnv(t)
 
 			ctx := context.TODO()
 
@@ -1621,7 +1136,7 @@ aws_secret_access_key = DefaultSharedCredentialsSecretKey
 					t.Fatalf("unexpected error writing shared configuration file: %s", err)
 				}
 
-				setSharedConfigFile(file.Name())
+				setSharedConfigFile(t, file.Name())
 			}
 
 			if tc.SharedCredentialsFile != "" {
@@ -1646,7 +1161,7 @@ aws_secret_access_key = DefaultSharedCredentialsSecretKey
 			}
 
 			for k, v := range tc.EnvironmentVariables {
-				os.Setenv(k, v)
+				t.Setenv(k, v)
 			}
 
 			b, diags := configureBackend(t, tc.config)
@@ -1693,6 +1208,7 @@ func TestBackendConfig_Authentication_AssumeRoleWithWebIdentity(t *testing.T) {
 			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleWithWebIdentityCredentials,
 			MockStsEndpoints: []*servicemocks.MockEndpoint{
 				servicemocks.MockStsAssumeRoleWithWebIdentityValidEndpoint,
+				servicemocks.MockStsGetCallerIdentityValidEndpoint,
 			},
 		},
 
@@ -1707,6 +1223,7 @@ func TestBackendConfig_Authentication_AssumeRoleWithWebIdentity(t *testing.T) {
 			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleWithWebIdentityCredentials,
 			MockStsEndpoints: []*servicemocks.MockEndpoint{
 				servicemocks.MockStsAssumeRoleWithWebIdentityValidEndpoint,
+				servicemocks.MockStsGetCallerIdentityValidEndpoint,
 			},
 		},
 
@@ -1722,6 +1239,7 @@ func TestBackendConfig_Authentication_AssumeRoleWithWebIdentity(t *testing.T) {
 			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleWithWebIdentityCredentials,
 			MockStsEndpoints: []*servicemocks.MockEndpoint{
 				servicemocks.MockStsAssumeRoleWithWebIdentityValidEndpoint,
+				servicemocks.MockStsGetCallerIdentityValidEndpoint,
 			},
 		},
 
@@ -1735,6 +1253,7 @@ func TestBackendConfig_Authentication_AssumeRoleWithWebIdentity(t *testing.T) {
 			ExpectedCredentialsValue:        mockdata.MockStsAssumeRoleWithWebIdentityCredentials,
 			MockStsEndpoints: []*servicemocks.MockEndpoint{
 				servicemocks.MockStsAssumeRoleWithWebIdentityValidEndpoint,
+				servicemocks.MockStsGetCallerIdentityValidEndpoint,
 			},
 		},
 
@@ -1749,6 +1268,7 @@ role_session_name = %[2]s
 			ExpectedCredentialsValue:   mockdata.MockStsAssumeRoleWithWebIdentityCredentials,
 			MockStsEndpoints: []*servicemocks.MockEndpoint{
 				servicemocks.MockStsAssumeRoleWithWebIdentityValidEndpoint,
+				servicemocks.MockStsGetCallerIdentityValidEndpoint,
 			},
 		},
 
@@ -1768,6 +1288,7 @@ role_session_name = %[2]s
 			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleWithWebIdentityCredentials,
 			MockStsEndpoints: []*servicemocks.MockEndpoint{
 				servicemocks.MockStsAssumeRoleWithWebIdentityValidEndpoint,
+				servicemocks.MockStsGetCallerIdentityValidEndpoint,
 			},
 		},
 
@@ -1782,6 +1303,7 @@ role_session_name = %[2]s
 		// 	ExpectedCredentialsValue:        mockdata.MockStsAssumeRoleWithWebIdentityCredentials,
 		// 	MockStsEndpoints: []*servicemocks.MockEndpoint{
 		// 		servicemocks.MockStsAssumeRoleWithWebIdentityValidEndpoint,
+		//      servicemocks.MockStsGetCallerIdentityValidEndpoint,
 		// 	},
 		// },
 
@@ -1801,6 +1323,7 @@ web_identity_token_file = no-such-file
 			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleWithWebIdentityCredentials,
 			MockStsEndpoints: []*servicemocks.MockEndpoint{
 				servicemocks.MockStsAssumeRoleWithWebIdentityValidEndpoint,
+				servicemocks.MockStsGetCallerIdentityValidEndpoint,
 			},
 		},
 
@@ -1821,6 +1344,7 @@ web_identity_token_file = no-such-file
 			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleWithWebIdentityCredentials,
 			MockStsEndpoints: []*servicemocks.MockEndpoint{
 				servicemocks.MockStsAssumeRoleWithWebIdentityValidEndpoint,
+				servicemocks.MockStsGetCallerIdentityValidEndpoint,
 			},
 		},
 
@@ -1836,6 +1360,7 @@ web_identity_token_file = no-such-file
 			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleWithWebIdentityCredentials,
 			MockStsEndpoints: []*servicemocks.MockEndpoint{
 				servicemocks.MockStsAssumeRoleWithWebIdentityValidWithOptions(map[string]string{"DurationSeconds": "3600"}),
+				servicemocks.MockStsGetCallerIdentityValidEndpoint,
 			},
 		},
 
@@ -1851,6 +1376,7 @@ web_identity_token_file = no-such-file
 			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleWithWebIdentityCredentials,
 			MockStsEndpoints: []*servicemocks.MockEndpoint{
 				servicemocks.MockStsAssumeRoleWithWebIdentityValidWithOptions(map[string]string{"Policy": "{}"}),
+				servicemocks.MockStsGetCallerIdentityValidEndpoint,
 			},
 		},
 
@@ -1858,18 +1384,17 @@ web_identity_token_file = no-such-file
 			config: map[string]any{
 				"assume_role_with_web_identity": map[string]any{},
 			},
-			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleWithWebIdentityCredentials,
 			ValidateDiags: ExpectDiagsEqual(tfdiags.Diagnostics{
+				attributeErrDiag(
+					"Missing Required Value",
+					`Exactly one of web_identity_token, web_identity_token_file must be set.`,
+					cty.GetAttrPath("assume_role_with_web_identity"),
+				),
 				attributeErrDiag(
 					"Missing Required Value",
 					`The attribute "assume_role_with_web_identity.role_arn" is required by the backend.`+"\n\n"+
 						"Refer to the backend documentation for additional information which attributes are required.",
 					cty.GetAttrPath("assume_role_with_web_identity").GetAttr("role_arn"),
-				),
-				attributeErrDiag(
-					"Missing Required Value",
-					`Exactly one of web_identity_token, web_identity_token_file must be set.`,
-					cty.GetAttrPath("assume_role_with_web_identity"),
 				),
 			}),
 		},
@@ -1880,11 +1405,28 @@ web_identity_token_file = no-such-file
 					"role_arn": servicemocks.MockStsAssumeRoleWithWebIdentityArn,
 				},
 			},
-			ExpectedCredentialsValue: mockdata.MockStsAssumeRoleWithWebIdentityCredentials,
 			ValidateDiags: ExpectDiagsEqual(tfdiags.Diagnostics{
 				attributeErrDiag(
 					"Missing Required Value",
 					`Exactly one of web_identity_token, web_identity_token_file must be set.`,
+					cty.GetAttrPath("assume_role_with_web_identity"),
+				),
+			}),
+		},
+
+		"invalid token config conflict": {
+			config: map[string]any{
+				"assume_role_with_web_identity": map[string]any{
+					"role_arn":           servicemocks.MockStsAssumeRoleWithWebIdentityArn,
+					"session_name":       servicemocks.MockStsAssumeRoleWithWebIdentitySessionName,
+					"web_identity_token": servicemocks.MockWebIdentityToken,
+				},
+			},
+			SetConfig: true,
+			ValidateDiags: ExpectDiagsEqual(tfdiags.Diagnostics{
+				attributeErrDiag(
+					"Invalid Attribute Combination",
+					`Only one of web_identity_token, web_identity_token_file can be set.`,
 					cty.GetAttrPath("assume_role_with_web_identity"),
 				),
 			}),
@@ -1895,8 +1437,7 @@ web_identity_token_file = no-such-file
 		tc := tc
 
 		t.Run(name, func(t *testing.T) {
-			oldEnv := servicemocks.InitSessionTestEnv()
-			defer servicemocks.PopEnv(oldEnv)
+			servicemocks.InitSessionTestEnv(t)
 
 			ctx := context.TODO()
 
@@ -1910,7 +1451,7 @@ web_identity_token_file = no-such-file
 			}
 
 			for k, v := range tc.EnvironmentVariables {
-				os.Setenv(k, v)
+				t.Setenv(k, v)
 			}
 
 			ts := servicemocks.MockAwsApiServer("STS", tc.MockStsEndpoints)
@@ -1925,7 +1466,7 @@ web_identity_token_file = no-such-file
 				t.Fatalf("error creating temp dir: %s", err)
 			}
 			defer os.Remove(tempdir)
-			os.Setenv("TMPDIR", tempdir)
+			t.Setenv("TMPDIR", tempdir)
 
 			tokenFile, err := os.CreateTemp("", "aws-sdk-go-base-web-identity-token-file")
 			if err != nil {
@@ -1958,7 +1499,7 @@ web_identity_token_file = no-such-file
 			}
 
 			if tc.SetTokenFileEnvironmentVariable {
-				os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFileName)
+				t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFileName)
 			}
 
 			if tc.SharedConfigurationFile != "" {
@@ -2003,6 +1544,159 @@ web_identity_token_file = no-such-file
 			}
 		})
 	}
+}
+
+var _ configtesting.TestDriver = &testDriver{}
+
+type testDriver struct {
+	mode configtesting.TestMode
+}
+
+func (t *testDriver) Init(mode configtesting.TestMode) {
+	t.mode = mode
+}
+
+func (t testDriver) TestCase() configtesting.TestCaseDriver {
+	return &testCaseDriver{
+		mode: t.mode,
+	}
+}
+
+var _ configtesting.TestCaseDriver = &testCaseDriver{}
+
+type testCaseDriver struct {
+	mode   configtesting.TestMode
+	config configurer
+}
+
+func (d *testCaseDriver) Configuration(fs []configtesting.ConfigFunc) configtesting.Configurer {
+	config := d.configuration()
+	for _, f := range fs {
+		f(config)
+	}
+	return config
+}
+
+func (d *testCaseDriver) configuration() *configurer {
+	if d.config == nil {
+		d.config = make(configurer, 0)
+	}
+	return &d.config
+}
+
+func (d *testCaseDriver) Setup(t *testing.T) {
+	ts := servicemocks.MockAwsApiServer("STS", []*servicemocks.MockEndpoint{
+		servicemocks.MockStsGetCallerIdentityValidEndpoint,
+	})
+	t.Cleanup(func() {
+		ts.Close()
+	})
+	d.config.AddEndpoint("sts", ts.URL)
+}
+
+func (d testCaseDriver) Apply(ctx context.Context, t *testing.T) (context.Context, configtesting.Thing) {
+	t.Helper()
+
+	// Populate required fields
+	d.config.SetRegion("us-east-1")
+	d.config.setBucket("bucket")
+	d.config.setKey("key")
+	if d.mode == configtesting.TestModeLocal {
+		d.config.SetSkipCredsValidation(true)
+		d.config.SetSkipRequestingAccountId(true)
+	}
+
+	b, diags := configureBackend(t, map[string]any(d.config))
+
+	var expected tfdiags.Diagnostics
+
+	if diff := cmp.Diff(diags, expected, cmp.Comparer(diagnosticComparer)); diff != "" {
+		t.Errorf("unexpected diagnostics difference: %s", diff)
+	}
+
+	return ctx, thing(b.awsConfig)
+}
+
+var _ configtesting.Configurer = &configurer{}
+
+type configurer map[string]any
+
+func (c configurer) AddEndpoint(k, v string) {
+	if endpoints, ok := c["endpoints"]; ok {
+		m := endpoints.(map[string]any)
+		m[k] = v
+	} else {
+		c["endpoints"] = map[string]any{
+			k: v,
+		}
+	}
+}
+
+func (c configurer) AddSharedConfigFile(f string) {
+	x := c["shared_config_files"]
+	if x == nil {
+		c["shared_config_files"] = []any{f}
+	} else {
+		files := x.([]any)
+		files = append(files, f)
+		c["shared_config_files"] = files
+	}
+}
+
+func (c configurer) setBucket(s string) {
+	c["bucket"] = s
+}
+
+func (c configurer) setKey(s string) {
+	c["key"] = s
+}
+
+func (c configurer) SetAccessKey(s string) {
+	c["access_key"] = s
+}
+
+func (c configurer) SetSecretKey(s string) {
+	c["secret_key"] = s
+}
+
+func (c configurer) SetProfile(s string) {
+	c["profile"] = s
+}
+
+func (c configurer) SetRegion(s string) {
+	c["region"] = s
+}
+
+func (c configurer) SetUseFIPSEndpoint(b bool) {
+	c["use_fips_endpoint"] = b
+}
+
+func (c configurer) SetSkipCredsValidation(b bool) {
+	c["skip_credentials_validation"] = b
+}
+
+func (c configurer) SetSkipRequestingAccountId(b bool) {
+	c["skip_requesting_account_id"] = b
+}
+
+var _ configtesting.Thing = thing{}
+
+type thing aws.Config
+
+func (t thing) GetCredentials() aws.CredentialsProvider {
+	return t.Credentials
+}
+
+func (t thing) GetRegion() string {
+	return t.Region
+}
+
+func TestBackendConfig_Authentication_SSO(t *testing.T) {
+	configtesting.SSO(t, &testDriver{})
+}
+
+func TestBackendConfig_Authentication_LegacySSO(t *testing.T) {
+	configtesting.LegacySSO(t, &testDriver{})
 }
 
 func TestBackendConfig_Region(t *testing.T) {
@@ -2162,15 +1856,14 @@ region = us-west-2
 		tc := tc
 
 		t.Run(name, func(t *testing.T) {
-			oldEnv := servicemocks.InitSessionTestEnv()
-			defer servicemocks.PopEnv(oldEnv)
+			servicemocks.InitSessionTestEnv(t)
 
 			// Populate required fields
 			tc.config["bucket"] = "bucket"
 			tc.config["key"] = "key"
 
 			for k, v := range tc.EnvironmentVariables {
-				os.Setenv(k, v)
+				t.Setenv(k, v)
 			}
 
 			if tc.IMDSRegion != "" {
@@ -2181,6 +1874,15 @@ region = us-west-2
 					servicemocks.Ec2metadata_instanceIdentityEndpoint(tc.IMDSRegion),
 				))
 				defer closeEc2Metadata()
+			}
+
+			ts := servicemocks.MockAwsApiServer("STS", []*servicemocks.MockEndpoint{
+				servicemocks.MockStsGetCallerIdentityValidEndpoint,
+			})
+			defer ts.Close()
+
+			tc.config["endpoints"] = map[string]any{
+				"sts": ts.URL,
 			}
 
 			if tc.SharedConfigurationFile != "" {
@@ -2198,7 +1900,7 @@ region = us-west-2
 					t.Fatalf("unexpected error writing shared configuration file: %s", err)
 				}
 
-				setSharedConfigFile(file.Name())
+				setSharedConfigFile(t, file.Name())
 			}
 
 			tc.config["skip_credentials_validation"] = true
@@ -2215,9 +1917,9 @@ region = us-west-2
 	}
 }
 
-func setSharedConfigFile(filename string) {
-	os.Setenv("AWS_SDK_LOAD_CONFIG", "1")
-	os.Setenv("AWS_CONFIG_FILE", filename)
+func setSharedConfigFile(t *testing.T, filename string) {
+	t.Setenv("AWS_SDK_LOAD_CONFIG", "1")
+	t.Setenv("AWS_CONFIG_FILE", filename)
 }
 
 func configureBackend(t *testing.T, config map[string]any) (*Backend, tfdiags.Diagnostics) {
@@ -2238,4 +1940,509 @@ func configureBackend(t *testing.T, config map[string]any) (*Backend, tfdiags.Di
 
 func sharedConfigCredentialsSource(filename string) string {
 	return fmt.Sprintf(sharedConfigCredentialsProvider+": %s", filename)
+}
+
+func TestStsEndpoint(t *testing.T) {
+	type settype int
+	const (
+		setNone settype = iota
+		setValid
+		setInvalid
+	)
+	testcases := map[string]struct {
+		Config                   map[string]any
+		SetServiceEndpoint       settype
+		SetServiceEndpointLegacy settype
+		SetEnv                   string
+		SetInvalidEnv            string
+		// Use string at index 1 for valid endpoint url and index 2 for invalid endpoint url
+		ConfigFile          string
+		ExpectedCredentials aws.Credentials
+	}{
+		// Service Config
+
+		"service config": {
+			Config: map[string]any{
+				"access_key": servicemocks.MockStaticAccessKey,
+				"secret_key": servicemocks.MockStaticSecretKey,
+			},
+			SetServiceEndpoint:  setValid,
+			ExpectedCredentials: mockdata.MockStaticCredentials,
+		},
+
+		"service config overrides service envvar": {
+			Config: map[string]any{
+				"access_key": servicemocks.MockStaticAccessKey,
+				"secret_key": servicemocks.MockStaticSecretKey,
+			},
+			SetServiceEndpoint:  setValid,
+			SetInvalidEnv:       "AWS_ENDPOINT_URL_STS",
+			ExpectedCredentials: mockdata.MockStaticCredentials,
+		},
+
+		"service config overrides service envvar legacy": {
+			Config: map[string]any{
+				"access_key": servicemocks.MockStaticAccessKey,
+				"secret_key": servicemocks.MockStaticSecretKey,
+			},
+			SetServiceEndpoint:  setValid,
+			SetInvalidEnv:       "AWS_STS_ENDPOINT",
+			ExpectedCredentials: mockdata.MockStaticCredentials,
+		},
+
+		"service config overrides base envvar": {
+			Config: map[string]any{
+				"access_key": servicemocks.MockStaticAccessKey,
+				"secret_key": servicemocks.MockStaticSecretKey,
+			},
+			SetServiceEndpoint:  setValid,
+			SetInvalidEnv:       "AWS_ENDPOINT_URL",
+			ExpectedCredentials: mockdata.MockStaticCredentials,
+		},
+
+		"service config overrides service config_file": {
+			Config: map[string]any{
+				"profile": "default",
+			},
+			ConfigFile: `
+[default]
+aws_access_key_id = DefaultSharedCredentialsAccessKey
+aws_secret_access_key = DefaultSharedCredentialsSecretKey
+services = sts-test
+
+[services sts-test]
+sts =
+	endpoint_url = %[2]s
+`,
+			SetServiceEndpoint: setValid,
+			ExpectedCredentials: aws.Credentials{
+				AccessKeyID:     "DefaultSharedCredentialsAccessKey",
+				SecretAccessKey: "DefaultSharedCredentialsSecretKey",
+				Source:          sharedConfigCredentialsProvider,
+			},
+		},
+
+		"service config overrides base config_file": {
+			Config: map[string]any{
+				"profile": "default",
+			},
+			ConfigFile: `
+[default]
+aws_access_key_id = DefaultSharedCredentialsAccessKey
+aws_secret_access_key = DefaultSharedCredentialsSecretKey
+endpoint_url = %[2]s
+`,
+			SetServiceEndpoint: setValid,
+			ExpectedCredentials: aws.Credentials{
+				AccessKeyID:     "DefaultSharedCredentialsAccessKey",
+				SecretAccessKey: "DefaultSharedCredentialsSecretKey",
+				Source:          sharedConfigCredentialsProvider,
+			},
+		},
+
+		// Service Config Legacy
+
+		"service config legacy": {
+			Config: map[string]any{
+				"access_key": servicemocks.MockStaticAccessKey,
+				"secret_key": servicemocks.MockStaticSecretKey,
+			},
+			SetServiceEndpointLegacy: setValid,
+			ExpectedCredentials:      mockdata.MockStaticCredentials,
+		},
+
+		"service config legacy overrides service envvar": {
+			Config: map[string]any{
+				"access_key": servicemocks.MockStaticAccessKey,
+				"secret_key": servicemocks.MockStaticSecretKey,
+			},
+			SetServiceEndpointLegacy: setValid,
+			SetInvalidEnv:            "AWS_ENDPOINT_URL_STS",
+			ExpectedCredentials:      mockdata.MockStaticCredentials,
+		},
+
+		"service config legacy overrides service envvar legacy": {
+			Config: map[string]any{
+				"access_key": servicemocks.MockStaticAccessKey,
+				"secret_key": servicemocks.MockStaticSecretKey,
+			},
+			SetServiceEndpointLegacy: setValid,
+			SetInvalidEnv:            "AWS_STS_ENDPOINT",
+			ExpectedCredentials:      mockdata.MockStaticCredentials,
+		},
+
+		"service config legacy overrides base envvar": {
+			Config: map[string]any{
+				"access_key": servicemocks.MockStaticAccessKey,
+				"secret_key": servicemocks.MockStaticSecretKey,
+			},
+			SetServiceEndpointLegacy: setValid,
+			SetInvalidEnv:            "AWS_ENDPOINT_URL",
+			ExpectedCredentials:      mockdata.MockStaticCredentials,
+		},
+
+		"service config legacy overrides service config_file": {
+			Config: map[string]any{
+				"profile": "default",
+			},
+			ConfigFile: `
+[default]
+aws_access_key_id = DefaultSharedCredentialsAccessKey
+aws_secret_access_key = DefaultSharedCredentialsSecretKey
+services = sts-test
+
+[services sts-test]
+sts =
+	endpoint_url = %[2]s
+`,
+			SetServiceEndpointLegacy: setValid,
+			ExpectedCredentials: aws.Credentials{
+				AccessKeyID:     "DefaultSharedCredentialsAccessKey",
+				SecretAccessKey: "DefaultSharedCredentialsSecretKey",
+				Source:          sharedConfigCredentialsProvider,
+			},
+		},
+
+		"service config legacy overrides base config_file": {
+			Config: map[string]any{
+				"profile": "default",
+			},
+			ConfigFile: `
+[default]
+aws_access_key_id = DefaultSharedCredentialsAccessKey
+aws_secret_access_key = DefaultSharedCredentialsSecretKey
+endpoint_url = %[2]s
+`,
+			SetServiceEndpointLegacy: setValid,
+			ExpectedCredentials: aws.Credentials{
+				AccessKeyID:     "DefaultSharedCredentialsAccessKey",
+				SecretAccessKey: "DefaultSharedCredentialsSecretKey",
+				Source:          sharedConfigCredentialsProvider,
+			},
+		},
+
+		// Service Envvar
+
+		"service envvar": {
+			Config: map[string]any{
+				"access_key": servicemocks.MockStaticAccessKey,
+				"secret_key": servicemocks.MockStaticSecretKey,
+			},
+			SetEnv:              "AWS_ENDPOINT_URL_STS",
+			ExpectedCredentials: mockdata.MockStaticCredentials,
+		},
+
+		"service envvar overrides base envvar": {
+			Config: map[string]any{
+				"access_key": servicemocks.MockStaticAccessKey,
+				"secret_key": servicemocks.MockStaticSecretKey,
+			},
+			SetEnv:              "AWS_ENDPOINT_URL_STS",
+			SetInvalidEnv:       "AWS_ENDPOINT_URL",
+			ExpectedCredentials: mockdata.MockStaticCredentials,
+		},
+
+		"service envvar overrides service config_file": {
+			Config: map[string]any{
+				"profile": "default",
+			},
+			SetEnv: "AWS_ENDPOINT_URL_STS",
+			ConfigFile: `
+[default]
+aws_access_key_id = DefaultSharedCredentialsAccessKey
+aws_secret_access_key = DefaultSharedCredentialsSecretKey
+services = sts-test
+
+[services sts-test]
+sts =
+	endpoint_url = %[2]s
+`,
+			ExpectedCredentials: aws.Credentials{
+				AccessKeyID:     "DefaultSharedCredentialsAccessKey",
+				SecretAccessKey: "DefaultSharedCredentialsSecretKey",
+				Source:          sharedConfigCredentialsProvider,
+			},
+		},
+
+		"service envvar overrides base config_file": {
+			Config: map[string]any{
+				"profile": "default",
+			},
+			SetEnv: "AWS_ENDPOINT_URL_STS",
+			ConfigFile: `
+[default]
+aws_access_key_id = DefaultSharedCredentialsAccessKey
+aws_secret_access_key = DefaultSharedCredentialsSecretKey
+endpoint_url = %[2]s
+`,
+			ExpectedCredentials: aws.Credentials{
+				AccessKeyID:     "DefaultSharedCredentialsAccessKey",
+				SecretAccessKey: "DefaultSharedCredentialsSecretKey",
+				Source:          sharedConfigCredentialsProvider,
+			},
+		},
+
+		"service envvar overrides service envvar legacy": {
+			Config: map[string]any{
+				"access_key": servicemocks.MockStaticAccessKey,
+				"secret_key": servicemocks.MockStaticSecretKey,
+			},
+			SetEnv:              "AWS_ENDPOINT_URL_STS",
+			SetInvalidEnv:       "AWS_STS_ENDPOINT",
+			ExpectedCredentials: mockdata.MockStaticCredentials,
+		},
+
+		// Service Envvar Legacy
+
+		"service envvar legacy": {
+			Config: map[string]any{
+				"access_key": servicemocks.MockStaticAccessKey,
+				"secret_key": servicemocks.MockStaticSecretKey,
+			},
+			SetEnv:              "AWS_STS_ENDPOINT",
+			ExpectedCredentials: mockdata.MockStaticCredentials,
+		},
+
+		"service envvar legacy overrides base envvar": {
+			Config: map[string]any{
+				"access_key": servicemocks.MockStaticAccessKey,
+				"secret_key": servicemocks.MockStaticSecretKey,
+			},
+			SetEnv:              "AWS_STS_ENDPOINT",
+			SetInvalidEnv:       "AWS_ENDPOINT_URL",
+			ExpectedCredentials: mockdata.MockStaticCredentials,
+		},
+
+		"service envvar legacy overrides service config_file": {
+			Config: map[string]any{
+				"profile": "default",
+			},
+			SetEnv: "AWS_STS_ENDPOINT",
+			ConfigFile: `
+[default]
+aws_access_key_id = DefaultSharedCredentialsAccessKey
+aws_secret_access_key = DefaultSharedCredentialsSecretKey
+services = sts-test
+
+[services sts-test]
+sts =
+	endpoint_url = %[2]s
+`,
+			ExpectedCredentials: aws.Credentials{
+				AccessKeyID:     "DefaultSharedCredentialsAccessKey",
+				SecretAccessKey: "DefaultSharedCredentialsSecretKey",
+				Source:          sharedConfigCredentialsProvider,
+			},
+		},
+
+		"service envvar legacy overrides base config_file": {
+			Config: map[string]any{
+				"profile": "default",
+			},
+			SetEnv: "AWS_STS_ENDPOINT",
+			ConfigFile: `
+[default]
+aws_access_key_id = DefaultSharedCredentialsAccessKey
+aws_secret_access_key = DefaultSharedCredentialsSecretKey
+endpoint_url = %[2]s
+`,
+			ExpectedCredentials: aws.Credentials{
+				AccessKeyID:     "DefaultSharedCredentialsAccessKey",
+				SecretAccessKey: "DefaultSharedCredentialsSecretKey",
+				Source:          sharedConfigCredentialsProvider,
+			},
+		},
+
+		// Service Config File
+
+		"service config_file": {
+			Config: map[string]any{
+				"profile": "default",
+			},
+			ConfigFile: `
+[default]
+aws_access_key_id = DefaultSharedCredentialsAccessKey
+aws_secret_access_key = DefaultSharedCredentialsSecretKey
+services = sts-test
+
+[services sts-test]
+sts =
+	endpoint_url = %[1]s
+`,
+			ExpectedCredentials: aws.Credentials{
+				AccessKeyID:     "DefaultSharedCredentialsAccessKey",
+				SecretAccessKey: "DefaultSharedCredentialsSecretKey",
+				Source:          sharedConfigCredentialsProvider,
+			},
+		},
+
+		"service config_file overrides base config_file": {
+			Config: map[string]any{
+				"profile": "default",
+			},
+			ConfigFile: `
+[default]
+aws_access_key_id = DefaultSharedCredentialsAccessKey
+aws_secret_access_key = DefaultSharedCredentialsSecretKey
+services = sts-test
+endpoint_url = %[2]s
+
+[services sts-test]
+sts =
+	endpoint_url = %[1]s
+`,
+			ExpectedCredentials: aws.Credentials{
+				AccessKeyID:     "DefaultSharedCredentialsAccessKey",
+				SecretAccessKey: "DefaultSharedCredentialsSecretKey",
+				Source:          sharedConfigCredentialsProvider,
+			},
+		},
+
+		// Base envvar
+
+		"base envvar": {
+			Config: map[string]any{
+				"access_key": servicemocks.MockStaticAccessKey,
+				"secret_key": servicemocks.MockStaticSecretKey,
+			},
+			SetEnv:              "AWS_ENDPOINT_URL",
+			ExpectedCredentials: mockdata.MockStaticCredentials,
+		},
+
+		"base envvar overrides service config_file": {
+			Config: map[string]any{
+				"profile": "default",
+			},
+			SetEnv: "AWS_ENDPOINT_URL",
+			ConfigFile: `
+[default]
+aws_access_key_id = DefaultSharedCredentialsAccessKey
+aws_secret_access_key = DefaultSharedCredentialsSecretKey
+services = sts-test
+
+[services sts-test]
+sts =
+	endpoint_url = %[2]s
+`,
+			ExpectedCredentials: aws.Credentials{
+				AccessKeyID:     "DefaultSharedCredentialsAccessKey",
+				SecretAccessKey: "DefaultSharedCredentialsSecretKey",
+				Source:          sharedConfigCredentialsProvider,
+			},
+		},
+
+		"base config_file": {
+			Config: map[string]any{
+				"profile": "default",
+			},
+			ConfigFile: `
+[default]
+aws_access_key_id = DefaultSharedCredentialsAccessKey
+aws_secret_access_key = DefaultSharedCredentialsSecretKey
+endpoint_url = %[1]s
+`,
+			ExpectedCredentials: aws.Credentials{
+				AccessKeyID:     "DefaultSharedCredentialsAccessKey",
+				SecretAccessKey: "DefaultSharedCredentialsSecretKey",
+				Source:          sharedConfigCredentialsProvider,
+			},
+		},
+
+		"base envvar overrides base config_file": {
+			Config: map[string]any{
+				"profile": "default",
+			},
+			SetEnv: "AWS_ENDPOINT_URL",
+			ConfigFile: `
+[default]
+aws_access_key_id = DefaultSharedCredentialsAccessKey
+aws_secret_access_key = DefaultSharedCredentialsSecretKey
+endpoint_url = %[2]s
+`,
+			ExpectedCredentials: aws.Credentials{
+				AccessKeyID:     "DefaultSharedCredentialsAccessKey",
+				SecretAccessKey: "DefaultSharedCredentialsSecretKey",
+				Source:          sharedConfigCredentialsProvider,
+			},
+		},
+	}
+
+	for name, testcase := range testcases {
+		testcase := testcase
+
+		t.Run(name, func(t *testing.T) {
+			servicemocks.InitSessionTestEnv(t)
+
+			// Populate required fields
+			testcase.Config["bucket"] = "bucket"
+			testcase.Config["key"] = "key"
+			testcase.Config["region"] = "us-west-2"
+
+			ts := servicemocks.MockAwsApiServer("STS", []*servicemocks.MockEndpoint{
+				servicemocks.MockStsGetCallerIdentityValidEndpoint,
+			})
+			defer ts.Close()
+			stsEndpoint := ts.URL
+
+			invalidTS := servicemocks.MockAwsApiServer("STS", []*servicemocks.MockEndpoint{
+				servicemocks.MockStsGetCallerIdentityInvalidEndpointAccessDenied,
+			})
+			defer invalidTS.Close()
+			stsInvalidEndpoint := invalidTS.URL
+
+			if testcase.SetServiceEndpoint == setValid {
+				testcase.Config["endpoints"] = map[string]any{
+					"sts": stsEndpoint,
+				}
+			}
+			if testcase.SetServiceEndpointLegacy == setValid {
+				testcase.Config["sts_endpoint"] = stsEndpoint
+			}
+			if testcase.SetEnv != "" {
+				t.Setenv(testcase.SetEnv, stsEndpoint)
+			}
+			if testcase.SetInvalidEnv != "" {
+				t.Setenv(testcase.SetInvalidEnv, stsInvalidEndpoint)
+			}
+			if testcase.ConfigFile != "" {
+				tempDir := t.TempDir()
+				filename := writeSharedConfigFile(t, testcase.Config, tempDir, fmt.Sprintf(testcase.ConfigFile, stsEndpoint, stsInvalidEndpoint))
+				testcase.ExpectedCredentials.Source = sharedConfigCredentialsSource(filename)
+			}
+
+			b, diags := configureBackend(t, testcase.Config)
+			if diags.HasErrors() {
+				t.Fatalf("configuring backend: %s", diagnosticsString(diags))
+			}
+
+			ctx := context.TODO()
+
+			credentialsValue, err := b.awsConfig.Credentials.Retrieve(ctx)
+			if err != nil {
+				t.Fatalf("unexpected credentials Retrieve() error: %s", err)
+			}
+
+			if diff := cmp.Diff(credentialsValue, testcase.ExpectedCredentials, cmpopts.IgnoreFields(aws.Credentials{}, "Expires")); diff != "" {
+				t.Fatalf("unexpected credentials: (- got, + expected)\n%s", diff)
+			}
+		})
+	}
+}
+
+func writeSharedConfigFile(t *testing.T, config map[string]any, tempDir, content string) string {
+	t.Helper()
+
+	file, err := os.Create(filepath.Join(tempDir, "aws-sdk-go-base-shared-configuration-file"))
+	if err != nil {
+		t.Fatalf("creating shared configuration file: %s", err)
+	}
+
+	_, err = file.WriteString(content)
+	if err != nil {
+		t.Fatalf(" writing shared configuration file: %s", err)
+	}
+
+	config["shared_config_files"] = []any{file.Name()}
+
+	return file.Name()
 }

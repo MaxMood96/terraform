@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package releaseauth
 
 import (
@@ -33,7 +36,7 @@ func NewSignatureAuthentication(signature []byte, signed []byte) *SignatureAuthe
 	return &SignatureAuthentication{
 		signature: signature,
 		signed:    signed,
-		PublicKey: HashicorpPublicKey,
+		PublicKey: HashiCorpPublicKey,
 	}
 }
 
@@ -56,7 +59,8 @@ func (a SignatureAuthentication) Authenticate() error {
 
 // HashicorpPublicKey is the HashiCorp public key, also available at
 // https://www.hashicorp.com/security
-const HashicorpPublicKey = `-----BEGIN PGP PUBLIC KEY BLOCK-----
+const HashiCorpPublicKeyID = "72D7468F"
+const HashiCorpPublicKey = `-----BEGIN PGP PUBLIC KEY BLOCK-----
 
 mQINBGB9+xkBEACabYZOWKmgZsHTdRDiyPJxhbuUiKX65GUWkyRMJKi/1dviVxOX
 PG6hBPtF48IFnVgxKpIb7G6NjBousAV+CuLlv5yqFKpOZEGC6sBV+Gx8Vu1CICpl

@@ -8,11 +8,11 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/hashicorp/cli"
 	"github.com/hashicorp/go-plugin"
 	svchost "github.com/hashicorp/terraform-svchost"
 	"github.com/hashicorp/terraform-svchost/auth"
 	"github.com/hashicorp/terraform-svchost/disco"
-	"github.com/mitchellh/cli"
 
 	"github.com/hashicorp/terraform/internal/addrs"
 	"github.com/hashicorp/terraform/internal/command"
@@ -21,6 +21,7 @@ import (
 	"github.com/hashicorp/terraform/internal/command/webbrowser"
 	"github.com/hashicorp/terraform/internal/getproviders"
 	pluginDiscovery "github.com/hashicorp/terraform/internal/plugin/discovery"
+	"github.com/hashicorp/terraform/internal/rpcapi"
 	"github.com/hashicorp/terraform/internal/terminal"
 )
 
@@ -90,7 +91,7 @@ func initCommands(
 		View:       views.NewView(streams).SetRunningInAutomation(inAutomation),
 
 		Color:            true,
-		GlobalPluginDirs: globalPluginDirs(),
+		GlobalPluginDirs: cliconfig.GlobalPluginDirs(),
 		Ui:               Ui,
 
 		Services:        services,
@@ -223,6 +224,12 @@ func initCommands(
 
 		"metadata functions": func() (cli.Command, error) {
 			return &command.MetadataFunctionsCommand{
+				Meta: meta,
+			}, nil
+		},
+
+		"modules": func() (cli.Command, error) {
+			return &command.ModulesCommand{
 				Meta: meta,
 			}, nil
 		},
@@ -420,6 +427,17 @@ func initCommands(
 				Meta: meta,
 			}, nil
 		}
+
+		// "rpcapi" is handled a bit differently because the whole point of
+		// this interface is to bypass the CLI layer so wrapping automation can
+		// get as-direct-as-possible access to Terraform Core functionality,
+		// without interference from behaviors that are intended for CLI
+		// end-user convenience. We bypass the "command" package entirely
+		// for this command in particular.
+		Commands["rpcapi"] = rpcapi.CLICommandFactory(rpcapi.CommandFactoryOpts{
+			ExperimentsAllowed: meta.AllowExperimentalFeatures,
+			ShutdownCh:         meta.ShutdownCh,
+		})
 	}
 
 	PrimaryCommands = []string{
@@ -434,6 +452,7 @@ func initCommands(
 		"env":             {},
 		"internal-plugin": {},
 		"push":            {},
+		"rpcapi":          {},
 	}
 }
 
@@ -456,6 +475,6 @@ func makeShutdownCh() <-chan struct{} {
 }
 
 func credentialsSource(config *cliconfig.Config) (auth.CredentialsSource, error) {
-	helperPlugins := pluginDiscovery.FindPlugins("credentials", globalPluginDirs())
+	helperPlugins := pluginDiscovery.FindPlugins("credentials", cliconfig.GlobalPluginDirs())
 	return config.CredentialsSource(helperPlugins)
 }

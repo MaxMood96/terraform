@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/hashicorp/terraform/internal/tfdiags"
 	"github.com/zclconf/go-cty/cty"
@@ -19,6 +21,7 @@ import (
 const (
 	multiRegionKeyIdPattern = `mrk-[a-f0-9]{32}`
 	uuidRegexPattern        = `[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[ab89][a-f0-9]{3}-[a-f0-9]{12}`
+	aliasRegexPattern       = `alias/[a-zA-Z0-9/_-]+`
 )
 
 func validateKMSKey(path cty.Path, s string) (diags tfdiags.Diagnostics) {
@@ -29,7 +32,7 @@ func validateKMSKey(path cty.Path, s string) (diags tfdiags.Diagnostics) {
 }
 
 func validateKMSKeyID(path cty.Path, s string) (diags tfdiags.Diagnostics) {
-	keyIdRegex := regexp.MustCompile(`^` + uuidRegexPattern + `|` + multiRegionKeyIdPattern + `$`)
+	keyIdRegex := regexp.MustCompile(`^` + uuidRegexPattern + `|` + multiRegionKeyIdPattern + `|` + aliasRegexPattern + `$`)
 	if !keyIdRegex.MatchString(s) {
 		diags = diags.Append(tfdiags.AttributeValue(
 			tfdiags.Error,
@@ -69,12 +72,22 @@ func validateKMSKeyARN(path cty.Path, s string) (diags tfdiags.Diagnostics) {
 }
 
 func isKeyARN(arn arn.ARN) bool {
-	return keyIdFromARNResource(arn.Resource) != ""
+	return keyIdFromARNResource(arn.Resource) != "" || aliasIdFromARNResource(arn.Resource) != ""
 }
 
 func keyIdFromARNResource(s string) string {
 	keyIdResourceRegex := regexp.MustCompile(`^key/(` + uuidRegexPattern + `|` + multiRegionKeyIdPattern + `)$`)
 	matches := keyIdResourceRegex.FindStringSubmatch(s)
+	if matches == nil || len(matches) != 2 {
+		return ""
+	}
+
+	return matches[1]
+}
+
+func aliasIdFromARNResource(s string) string {
+	aliasIdResourceRegex := regexp.MustCompile(`^(` + aliasRegexPattern + `)$`)
+	matches := aliasIdResourceRegex.FindStringSubmatch(s)
 	if matches == nil || len(matches) != 2 {
 		return ""
 	}
@@ -116,6 +129,49 @@ func validateStringMatches(re *regexp.Regexp, description string) stringValidato
 				path,
 			))
 		}
+	}
+}
+
+func validateStringDoesNotContain(s string) stringValidator {
+	return func(val string, path cty.Path, diags *tfdiags.Diagnostics) {
+		if strings.Contains(val, s) {
+			*diags = diags.Append(attributeErrDiag(
+				"Invalid Value",
+				fmt.Sprintf(`Value must not contain "%s"`, s),
+				path,
+			))
+		}
+	}
+}
+
+func validateStringInSlice(sl []string) stringValidator {
+	return func(val string, path cty.Path, diags *tfdiags.Diagnostics) {
+		match := false
+		for _, s := range sl {
+			if val == s {
+				match = true
+			}
+		}
+		if !match {
+			*diags = diags.Append(attributeErrDiag(
+				"Invalid Value",
+				fmt.Sprintf("Value must be one of [%s]", strings.Join(sl, ", ")),
+				path,
+			))
+		}
+
+	}
+}
+
+// validateStringRetryMode ensures the provided value in a valid AWS retry mode
+func validateStringRetryMode(val string, path cty.Path, diags *tfdiags.Diagnostics) {
+	_, err := aws.ParseRetryMode(val)
+	if err != nil {
+		*diags = diags.Append(attributeErrDiag(
+			"Invalid Value",
+			err.Error(),
+			path,
+		))
 	}
 }
 
@@ -221,6 +277,59 @@ The string content was valid JSON, your policy document may have been double-enc
 func validateStringKMSKey(val string, path cty.Path, diags *tfdiags.Diagnostics) {
 	ds := validateKMSKey(path, val)
 	*diags = diags.Append(ds)
+}
+
+// validateStringLegacyURL validates that a string can be parsed generally as a URL, but does
+// not ensure that the URL is valid.
+func validateStringLegacyURL(val string, path cty.Path, diags *tfdiags.Diagnostics) {
+	u, err := url.Parse(val)
+	if err != nil {
+		*diags = diags.Append(attributeErrDiag(
+			"Invalid Value",
+			fmt.Sprintf("The value %q cannot be parsed as a URL: %s", val, err),
+			path,
+		))
+		return
+	}
+	if u.Scheme == "" || u.Host == "" {
+		*diags = diags.Append(legacyIncompleteURLDiag(val, path))
+		return
+	}
+}
+
+func legacyIncompleteURLDiag(val string, path cty.Path) tfdiags.Diagnostic {
+	return attributeWarningDiag(
+		"Complete URL Expected",
+		fmt.Sprintf(`The value should be a valid URL containing at least a scheme and hostname. Had %q.
+
+Using an incomplete URL, such as a hostname only, may work, but may have unexpected behavior.`, val),
+		path,
+	)
+}
+
+// validateStringValidURL validates that a URL is a valid URL, inclding a scheme and host
+func validateStringValidURL(val string, path cty.Path, diags *tfdiags.Diagnostics) {
+	u, err := url.Parse(val)
+	if err != nil {
+		*diags = diags.Append(attributeErrDiag(
+			"Invalid Value",
+			fmt.Sprintf("The value %q cannot be parsed as a URL: %s", val, err),
+			path,
+		))
+		return
+	}
+	if u.Scheme == "" || u.Host == "" {
+		*diags = diags.Append(invalidURLDiag(val, path))
+		return
+	}
+}
+
+func invalidURLDiag(val string, path cty.Path) tfdiags.Diagnostic {
+	return attributeErrDiag(
+		"Invalid Value",
+		fmt.Sprintf("The value must be a valid URL containing at least a scheme and hostname. Had %q", val),
+		path,
+	)
 }
 
 // Using a val of `cty.ValueSet` would be better here, but we can't get an ElementIterator from a ValueSet
@@ -410,4 +519,12 @@ func wholeBodyErrDiag(summary, detail string) tfdiags.Diagnostic {
 
 func wholeBodyWarningDiag(summary, detail string) tfdiags.Diagnostic {
 	return tfdiags.WholeContainingBody(tfdiags.Warning, summary, detail)
+}
+
+var assumeRoleNameValidator = []stringValidator{
+	validateStringLenBetween(2, 64),
+	validateStringMatches(
+		regexp.MustCompile(`^[\w+=,.@\-]*$`),
+		`Value can only contain letters, numbers, or the following characters: =,.@-`,
+	),
 }

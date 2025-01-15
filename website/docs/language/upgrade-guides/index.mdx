@@ -1,56 +1,72 @@
 ---
-page_title: Upgrading to Terraform v1.5
-description: Upgrading to Terraform v1.5
+page_title: Upgrading to Terraform v1.10
+description: Upgrading to Terraform v1.10
 ---
 
-# Upgrading to Terraform v1.5
+# Upgrading to Terraform v1.10
 
 -> **Tip:** Use the version selector to view the upgrade guides for older Terraform versions.
 
-Terraform v1.5 is a minor release in the stable Terraform v1.0 series.
+Terraform v1.10 is a minor release in the stable Terraform v1.0 series.
 
-Terraform v1.5 honors the
-[Terraform v1.0 Compatibility Promises](https://developer.hashicorp.com/terraform/language/v1-compatibility-promises),
-but there are some behavior changes outside of those promises that may affect a
-small number of users. Specifically, the following updates may require
-additional upgrade steps:
-* [End of support for older macOS releases](#end-of-support-for-older-macos-releases)
-* [Linux DNS resolver changes](#linux-dns-resolver-changes)
+Terraform v1.10 honors the
+[Terraform v1.0 Compatibility Promises](https://developer.hashicorp.com/terraform/language/v1-compatibility-promises).
+There are minor changes that may require additional upgrade steps:
 
-See [the full changelog](https://github.com/hashicorp/terraform/blob/v1.5/CHANGELOG.md)
+- `moved` blocks will now report an error if `from` or `to` points to a resource type conflicting with reserved keywords
+
+See [the full changelog](https://github.com/hashicorp/terraform/blob/v1.10/CHANGELOG.md)
 for more details. If you encounter any problems during upgrading which are not
 covered this guide, please start a new topic in
 [the Terraform community forum](https://discuss.hashicorp.com/c/terraform-core)
 to discuss it.
 
-## End of support for older macOS releases
+## Conflicting `moved` block references
 
-Terraform v1.5 will be the last release supported on macOS 10.13 High Sierra
-and macOS 10.14 Mojave, both of which are no longer maintained by Apple.
+Moved blocks now respect reserved keywords such as `local`, `each`, `self` etc. when parsing resource addresses.
+Configurations that reference resources with type names that match top level blocks and
+keywords from moved blocks will need to prepend the reference identifier with `resource.`.
 
-Terraform v1.5 itself supports these older macOS versions, but we strongly
-recommend upgrading during the v1.5 release period so that you'll be ready to
-use Terraform v1.6 once it is released.
+## S3 Backend 
 
-## Linux DNS resolver changes
+Executing `terraform init -reconfigure` is required after updating to Terraform v1.10. This removes the [deprecated fields](#root-assume-role-attribute-removal) from the internal state file.
 
-Terraform on Linux uses a built-in DNS resolver rather than using the DNS
-resolver from the platform's C library, because this allows Terraform to run
-on systems with many different C libraries.
+### S3 Native State Locking
 
-In Terraform v1.5, the DNS resolver will now notice when you have set the
-`trust-ad` option in your `/etc/resolve.conf` file, and will respond by setting
-the "authentic data" option in outgoing DNS requests to better match the
-behavior of the GNU libc DNS resolver.
+The S3 backend now supports S3 native state locking as an opt-in, experimental feature.
+An S3 lock can be used alongside a DynamoDB lock, or independently.
+When both locking mechanisms are configured, a lock must be successfully acquired from both locations before subsequent operations will proceed.
 
-Terraform does not pay any attention to the corresponding option in responses,
-but some DNSSEC-aware recursive resolvers return different responses when the
-request option isn't set. This should therefore avoid some potential situations
-where a DNS request from Terraform might get a different response than a
-similar request from other software on your system.
+To opt-in to S3 native state locking, set `use_lockfile` to `true`.
 
-We don't expect this behavior change to be significant for most Terraform users.
+```terraform
+terraform {
+  backend "s3" {
+    # additional configuration omitted for brevity
+    use_lockfile = true
+  }
+}
+```
 
-Note that this change affects only DNS requests made by Terraform CLI itself,
-and not requests made by providers. Provider plugins are separate programs
-which handle DNS resolution themselves and so may have different behavior.
+With S3 locking enabled, a lock file will be placed in the same location as the state file.
+The lock file will be named identically to the state file, but with a `.tflock` extension.
+**S3 bucket policies and IAM policies attached to the calling principal may need to be adjusted to include permissions for the new lock file.**
+
+In a future minor version of Terraform the experimental label will be removed from the `use_lockfile` attribute and attributes related to DynamoDB based locking will be deprecated.
+
+### Root Assume Role Attribute Removal
+
+Several root level attributes related to IAM role assumption which were previously deprecated have been removed.
+Each removed field has an analogous field inside the [`assume_role` block](https://developer.hashicorp.com/terraform/language/backend/s3#assume-role-configuration) which should be used instead.
+
+
+| Removed | Replacement |
+| --- | --- |
+| `role_arn` | `assume_role.role_arn` |
+| `session_name` | `assume_role.session_name` |
+| `external_id` | `assume_role.external_id` |
+| `assume_role_duration_seconds` | `assume_role.duration` |
+| `assume_role_policy` | `assume_role.policy` |
+| `assume_role_policy_arns` | `assume_role.policy_arn` |
+| `assume_role_tags` | `assume_role.tags` |
+| `assume_role_transitive_tag_keys` | `assume_role.transitive_tag_keys` |
